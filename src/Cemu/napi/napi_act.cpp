@@ -7,6 +7,7 @@
 #include "config/ActiveSettings.h"
 #include "util/helpers/StringHelpers.h"
 #include "util/highresolutiontimer/HighResolutionTimer.h"
+#include <fstream>
 
 namespace NAPI
 {
@@ -274,9 +275,76 @@ namespace NAPI
 	std::vector<NexTokenCacheEntry> g_nexTokenCache;
 	std::mutex g_nexTokenCacheMtx;
 
+	// MH3U revival: resolve the revival NEX server endpoint. Reads "<host>" or
+	// "<host>:<port>" from <ConfigPath>/mh3u_server.txt so ONE patched build can
+	// target any server (each player just edits this one line to their host's IP).
+	// Falls back to 127.0.0.1:1223 when the file is missing/empty. The nexToken.host
+	// field is char[0x10], so host must be <=15 chars (IPv4 fits; use a short host).
+	static void _getMH3URevivalEndpoint(char(&hostOut)[16], uint16& portOut)
+	{
+		std::string host = "127.0.0.1";
+		uint16 port = 1223;
+		try
+		{
+			std::ifstream f(ActiveSettings::GetConfigPath("mh3u_server.txt"));
+			std::string line;
+			while (f.is_open() && std::getline(f, line))
+			{
+				size_t a = line.find_first_not_of(" \t\r\n");
+				if (a == std::string::npos) continue;
+				size_t b = line.find_last_not_of(" \t\r\n");
+				line = line.substr(a, b - a + 1);
+				if (line.empty() || line[0] == '#') continue;   // skip blanks/comments
+				size_t colon = line.rfind(':');
+				std::string p = (colon != std::string::npos) ? line.substr(colon + 1) : "";
+				if (colon != std::string::npos && !p.empty() &&
+					p.find_first_not_of("0123456789") == std::string::npos)
+				{
+					host = line.substr(0, colon);                // host:port
+					port = (uint16)StringHelpers::ToInt(p);
+				}
+				else
+				{
+					host = line;                                 // host only -> default port
+				}
+				break;                                           // first valid line wins
+			}
+		}
+		catch (const std::exception&) {}
+		if (host.empty() || host.size() > 15)
+		{
+			cemuLog_log(LogType::Force, fmt::format("[MH3U] mh3u_server.txt host '{}' invalid (>15 chars / empty); using 127.0.0.1", host));
+			host = "127.0.0.1";
+		}
+		strncpy(hostOut, host.c_str(), 15);
+		hostOut[15] = '\0';
+		portOut = port;
+	}
+
 	ACTGetNexTokenResult ACT_GetNexToken_WithCache(AuthInfo& authInfo, uint64 titleId, uint16 titleVersion, uint32 serverId)
 	{
 		ACTGetNexTokenResult result{};
+		// === MH3U no-dump revival ===================================================
+		// Hand the game our own NEX server directly, bypassing the dead Nintendo
+		// account server + all OAuth/TLS/crypto. Gated on MH3U's titleId/server-id so
+		// other titles are unaffected. host/port come from mh3u_server.txt (see
+		// _getMH3URevivalEndpoint) — each player edits that one line to the shared
+		// server's IP; defaults to 127.0.0.1:1223 for single-machine use.
+		cemuLog_log(LogType::Force, fmt::format("[MH3U] ACT_GetNexToken_WithCache titleId=0x{:016x} serverId=0x{:08x}", titleId, serverId));
+		if (titleId == 0x0005000010118300ull || serverId == 0x1F942000)
+		{
+			result.apiError = NAPI_RESULT::SUCCESS;
+			char host[16] = {};
+			uint16 port = 1223;
+			_getMH3URevivalEndpoint(host, port);
+			strcpy(result.nexToken.host, host);
+			result.nexToken.port = port;
+			strcpy(result.nexToken.token, "mh3u_revival_token");
+			strcpy(result.nexToken.nexPassword, "mh3u_revival_pw");
+			cemuLog_log(LogType::Force, fmt::format("[MH3U] NexToken redirected to {}:{}", host, port));
+			return result;
+		}
+		// ===========================================================================
 		// check cache
 		g_nexTokenCacheMtx.lock();
 		for (auto& itr : g_nexTokenCache)

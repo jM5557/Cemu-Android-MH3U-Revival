@@ -431,7 +431,20 @@ namespace iosu
 				// called once a second while service is running
 				std::unique_lock _l(g_fpd.mtxFriendSession);
 				if (!g_fpd.nexFriendSession)
+				{
+					// MH3U no-dump revival: no Friends NEX server is available (the friend-server
+					// nex token request fails in napi_act, so StartFriendSession bails and
+					// nexFriendSession is never created). Without this, the delayed LoginAsync
+					// response is never sent and the game hangs forever on "Connected to the
+					// Internet." Complete the pending login locally (offline friends mode); the
+					// friend-data IPC handlers already return empty/default when the session is null.
+					while (!m_asyncLoginRequests.empty())
+					{
+						ServiceCallAsyncRespond(m_asyncLoginRequests.front(), FPResult_Ok);
+						m_asyncLoginRequests.erase(m_asyncLoginRequests.begin());
+					}
 					return;
+				}
 				g_fpd.nexFriendSession->update();
 				while(!m_asyncLoginRequests.empty())
 				{
@@ -615,7 +628,9 @@ namespace iosu
 			{
 				if(numVecIn != 0 || numVecOut != 1)
 					return FPResult_InvalidIPCParam;
-				bool isOnline = g_fpd.nexFriendSession ? g_fpd.nexFriendSession->isOnline() : false;
+				// MH3U no-dump revival: with no Friends NEX server, nexFriendSession is null;
+				// report "online" when the client has logged in locally (offline friends mode).
+				bool isOnline = g_fpd.nexFriendSession ? g_fpd.nexFriendSession->isOnline() : (fpdClient->hasLoggedIn != 0);
 				return WriteValueOutput<uint32be>(vecOut, isOnline?1:0);
 			}
 
