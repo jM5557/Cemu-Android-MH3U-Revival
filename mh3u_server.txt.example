@@ -1,0 +1,23 @@
+# mh3u_server.txt  -  MH3U revival: which server your Cemu connects to.
+#
+# Put this file (named exactly "mh3u_server.txt", drop the ".example") in your
+# Cemu CONFIG folder -- the same folder as settings.xml.
+#
+# One line: the server's address, optionally with a port.
+#
+#     <host>            (port defaults to 1223)
+#     <host>:<port>
+#
+# Examples:
+#     127.0.0.1         <- you run the server on this same PC (default)
+#     192.168.1.50      <- a server on another PC on your LAN
+#     203.0.113.7:1223  <- a friend's public IP (they port-forward or use a VPS)
+#     100.64.0.3        <- a Tailscale / ZeroTier overlay IP
+#
+# Lines starting with '#' are ignored; the first real line wins.
+#
+# LIMIT: host must be 15 characters or fewer (a Wii U nexToken field limit) --
+# use an IP address, not a long domain name. If this file is missing or empty,
+# Cemu falls back to 127.0.0.1:1223.
+
+127.0.0.1
