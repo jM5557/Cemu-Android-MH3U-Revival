@@ -334,21 +334,19 @@ namespace NAPI
 		// agnostic; only the redirect gate needs each region's titleId. NOTE: the
 		// PRUDP access key (server config.py) was verified on US; if an EU/JP client
 		// reaches the server but the SYN signature is rejected, that region's access
-		// key differs and must be added server-side. JP id is unverified — harmless
-		// no-op if wrong.
+		// key differs and must be added server-side.
 		cemuLog_log(LogType::Force, fmt::format("[MH3U] ACT_GetNexToken_WithCache titleId=0x{:016x} serverId=0x{:08x}", titleId, serverId));
 		// Region-agnostic gate: MH3U's NEX game-server-id is 0x10104d00 across ALL
-		// SKUs (confirmed live: US 0x..118300, EU 0x..117200, EU 0x..116300, JP
-		// 0x..10EC00 all call ACT_GetNexToken with serverId=0x10104d00). Gating on
-		// serverId catches every region/SKU without enumerating titleIds — the
-		// titleId list below is kept only as belt-and-suspenders. (The old
-		// `serverId == 0x1F942000` was a wrong static guess that never matched.)
+		// SKUs (confirmed live: US 0x..118300, EU 0x..117200; JP 0x..104d00 verified
+		// from a real JP log 2026-07-01 — the serverId IS the original JP titleId's
+		// low word). Gating on serverId catches every region/SKU without enumerating
+		// titleIds — the titleId list below is kept only as belt-and-suspenders. (The
+		// old `serverId == 0x1F942000` was a wrong static guess that never matched.)
 		if (serverId == 0x10104d00              // MH3U NEX game-server-id (all regions)
 			|| titleId == 0x0005000010118300ull // US  (MH3U)
 			|| titleId == 0x0005000010117200ull // EU  (MH3U) — user's actual EU SKU
 			|| titleId == 0x0005000010116300ull // EU  (MH3U) — alt SKU
-			|| titleId == 0x000500001014F100ull // JP  (MH3G HD Ver.)
-			|| titleId == 0x000500001010EC00ull) // JP  (MH3G HD Ver. — alt SKU)
+			|| titleId == 0x0005000010104D00ull) // JP (MH3G HD Ver.) — verified from live JP log
 		{
 			result.apiError = NAPI_RESULT::SUCCESS;
 			char host[16] = {};
