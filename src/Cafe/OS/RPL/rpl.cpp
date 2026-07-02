@@ -1978,7 +1978,23 @@ void RPLLoader_AddDependency(std::string_view name)
 	const auto cafeLibsFilePath = ActiveSettings::GetUserDataPath("cafeLibs/{}", newDependency->filepath);
 	std::error_code ec;
 	if (!fs::exists(cafeLibsFilePath, ec))
-		newDependency->rplHLEModule = RPLLoader_GetHLECafeOSModule(moduleName);
+	{
+		// MH3U revival: a title-shipped RPL also takes priority over the HLE module,
+		// restoring the pre-c5913fe8 loader behavior (the title's code/ dir used to be
+		// tried before falling back to HLE). MH3G HD (JP) ships its own swkbd.rpl and
+		// hangs forever on the HLE version. erreula.rpl is exempt: it must stay HLE
+		// (same as the long-standing blacklist in RPLLoader_LoadDependency).
+		// Upstream report: https://github.com/cemu-project/Cemu/issues/1977
+		bool titleShipsRpl = false;
+		if (!isMainExecutable && !boost::iequals(fileName, "erreula.rpl"))
+		{
+			std::string titleRplPath("/internal/current_title/code/");
+			titleRplPath.append(fileName);
+			titleShipsRpl = fsc_doesFileExist(titleRplPath.c_str());
+		}
+		if (!titleShipsRpl)
+			newDependency->rplHLEModule = RPLLoader_GetHLECafeOSModule(moduleName);
+	}
 	rplDependencyList.push_back(newDependency);
 }
 
