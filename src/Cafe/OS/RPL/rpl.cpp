@@ -1986,10 +1986,10 @@ void RPLLoader_AddDependency(std::string_view name)
 		// (same as the long-standing blacklist in RPLLoader_LoadDependency).
 		// Upstream report: https://github.com/cemu-project/Cemu/issues/1977
 		bool titleShipsRpl = false;
-		if (!isMainExecutable && !boost::iequals(fileName, "erreula.rpl"))
+		if (!isMainExecutable && !boost::iequals(newDependency->filepath, "erreula.rpl"))
 		{
 			std::string titleRplPath("/internal/current_title/code/");
-			titleRplPath.append(fileName);
+			titleRplPath.append(newDependency->filepath);
 			titleShipsRpl = fsc_doesFileExist(titleRplPath.c_str());
 		}
 		if (!titleShipsRpl)

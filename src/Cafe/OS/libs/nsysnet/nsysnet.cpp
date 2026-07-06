@@ -4,8 +4,10 @@
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
 #include "Cafe/OS/libs/coreinit/coreinit_GHS.h"
+#include "config/ActiveSettings.h"
 
 #include "Common/socket.h"
+#include <fstream>
 
 #if BOOST_OS_UNIX
 #include <netinet/tcp.h>
@@ -1346,11 +1348,53 @@ MPTR _allocString(char* str)
 	return strMPTR;
 }
 
+// MH3U revival: redirect the game's NAT-check lookups (nncs1/nncs2.app.nintendowifi.net)
+// to the revival server from mh3u_server.txt (same file napi_act.cpp uses for the NEX
+// redirect; host part only, port untouched). The server runs a NAT-check responder that
+// reports the address it OBSERVES, so a client on an overlay VPN that doesn't own the
+// default route (Radmin) self-discovers its overlay-plane station instead of its raw
+// ISP-NAT one. The game relays that self-station peer-to-peer to set up joiner<->joiner
+// room mesh links — with the wrong plane there, every joiner<->joiner link fails and
+// rooms cap at host+1 (server-side probe restamping can't reach that relay). No-op when
+// mh3u_server.txt doesn't exist, and only nncs* NAT-check hostnames are touched.
+static const char* _mh3uMaybeRedirectNatCheckHost(const char* name, std::string& storage)
+{
+	if (!name || strncmp(name, "nncs", 4) != 0 || !strstr(name, "nintendo"))
+		return name;
+	try
+	{
+		std::ifstream f(ActiveSettings::GetConfigPath("mh3u_server.txt"));
+		std::string line;
+		while (f.is_open() && std::getline(f, line))
+		{
+			size_t a = line.find_first_not_of(" \t\r\n");
+			if (a == std::string::npos) continue;
+			size_t b = line.find_last_not_of(" \t\r\n");
+			line = line.substr(a, b - a + 1);
+			if (line.empty() || line[0] == '#') continue;
+			size_t colon = line.rfind(':');
+			if (colon != std::string::npos && colon + 1 < line.size() &&
+				line.find_first_not_of("0123456789", colon + 1) == std::string::npos)
+				line = line.substr(0, colon);   // strip ":port"
+			if (line.empty())
+				break;
+			storage = line;
+			cemuLog_log(LogType::Force, fmt::format("[MH3U] NAT-check redirect: {} -> {}", name, storage));
+			return storage.c_str();
+		}
+	}
+	catch (const std::exception&) {}
+	return name;
+}
+
 void nsysnetExport_gethostbyname(PPCInterpreter_t* hCPU)
 {
 	ppcDefineParamStr(name, 0);
 
 	cemuLog_log(LogType::Socket, "gethostbyname(\"{}\")", name);
+
+	std::string _mh3uHostStorage;
+	name = (char*)_mh3uMaybeRedirectNatCheckHost(name, _mh3uHostStorage);
 
 	hostent* he = gethostbyname(name);
 	if (he == NULL)
@@ -1457,7 +1501,10 @@ void nsysnetExport_getaddrinfo(PPCInterpreter_t* hCPU)
 	ppcDefineParamMPTR(results, 3);
 
 	cemuLog_log(LogType::Socket, "getaddrinfo(\"{}\",0x{:08x},0x{:08x},0x{:08x})", nodeName, hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
-	
+
+	std::string _mh3uHostStorage;
+	nodeName = (char*)_mh3uMaybeRedirectNatCheckHost(nodeName, _mh3uHostStorage);
+
 	sint32 r = 0;
 
 	// todo1: This is really slow. Make it asynchronous
