@@ -7,6 +7,7 @@
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
 
 #include "Cafe/GraphicPack/GraphicPack2.h"
+#include "Cafe/HW/Latte/Core/LatteTextureReplace.h"
 
 #include <boost/container/small_vector.hpp>
 
@@ -1150,6 +1151,61 @@ LatteTextureView* LatteTC_GetTextureSliceViewOrTryCreate(MPTR srcImagePtr, MPTR 
 	return LatteTexture_CreateMapping(srcImagePtr, srcMipPtr, srcWidth, srcHeight, srcDepth, srcPitch, srcTileMode, srcSwizzle, srcMip, 1, srcSlice, 1, srcFormat, srcDepth > 1 ? Latte::E_DIM::DIM_2D_ARRAY : Latte::E_DIM::DIM_2D, Latte::E_DIM::DIM_2D, false, false);
 }
 
+
+// [texture replacement] Rebuild one texture so the creation-time size/format overwrite runs again
+// with settled guest data. Modeled on LatteTexture_RecreateTextureWithDifferentMipSliceCount but
+// keeps identical parameters. Recreating a single texture avoids a full cache flush.
+
+// [texture replacement] How many times one texture may be recreated chasing a replacement whose
+// size will not reconcile. A genuine stale overwrite resolves on the first attempt; anything still
+// mismatched after a few tries never will -- a truncated or malformed DDS in someone's pack, for
+// instance -- and would otherwise be recreated on every recheck pass for the rest of the session.
+static constexpr uint16 kMaxReplRecreateAttempts = 8;
+
+static void LatteTexture_RecreateForReplacement(LatteTexture* texture)
+{
+	LatteTextureView* view = LatteTexture_CreateTexture(texture->dim, texture->physAddress, texture->physMipAddress, texture->format, texture->width, texture->height, texture->depth, texture->pitch, texture->mipLevels, texture->swizzle, texture->tileMode, texture->isDepth);
+	// Carry the attempt count onto the new object. Recreating makes a NEW texture and deletes this
+	// one, so a counter left behind here would never accumulate and the cap would never be reached.
+	view->baseTexture->replRecheckCount = (uint16)(texture->replRecheckCount + 1);
+	if (view->baseTexture->replRecheckCount >= kMaxReplRecreateAttempts)
+	{
+		view->baseTexture->replGaveUp = true;
+		cemuLog_log(LogType::Force, "[TextureReplace] {:016x} still mismatched after {} attempts - leaving it alone", texture->replStrongHash, (uint32)view->baseTexture->replRecheckCount);
+	}
+	if (texture->isUpdatedOnGPU)
+	{
+		LatteTexture_copyData(texture, view->baseTexture, texture->mipLevels, texture->depth);
+		view->baseTexture->isUpdatedOnGPU = true;
+	}
+	LatteTexture_Delete(texture);
+	LatteTexture_GatherTextureRelations(view->baseTexture);
+	LatteTexture_UpdateTextureFromDynamicChanges(view->baseTexture);
+	LatteTexture_DeleteAbsorbedSubtextures(view->baseTexture);
+}
+
+// [texture replacement] Recreate any texture flagged as stale, i.e. one where a replacement was
+// found but its size did not match the host texture. That happens when a texture object is reused
+// for different data (e.g. swapping equipment) and still carries the previous overwrite.
+// Recreating makes it a fresh load so the loader sizes it correctly. One per call to stay safe.
+void LatteTexture_RecheckReplacements()
+{
+	if (!LatteTextureReplace::IsEnabled())
+		return;
+	std::vector<LatteTexture*> allCopy = LatteTexture::GetAllTextures();
+	for (auto tex : allCopy)
+	{
+		if (tex && tex->needsReplRecreate)
+		{
+			tex->needsReplRecreate = false;
+			if (tex->replGaveUp)
+				continue; // already capped out, don't churn on it again
+			LatteTexture_RecreateForReplacement(tex);
+			return;
+		}
+	}
+}
+
 void LatteTexture_UpdateDataToLatest(LatteTexture* texture)
 {
 	if (LatteTC_HasTextureChanged(texture))
@@ -1300,6 +1356,35 @@ LatteTexture::LatteTexture(Latte::E_DIM dim, MPTR physAddress, MPTR physMipAddre
 			if (rule.overwrite_settings.anistropic_value != -1)
 			{
 				this->overwriteInfo.anisotropicLevel = rule.overwrite_settings.anistropic_value;
+			}
+		}
+	}
+	// [texture replacement] size/format the texture from a matching replacement file, so no
+	// graphic-pack [TextureRedefine] rule is needed for custom textures.
+	//
+	// Gated on IsCompressedFormat like every hook in LatteTextureLoader. They all have to agree:
+	// if this one applies an overwrite to a format the loader will not fill, the slice is cleared
+	// and the texture renders blank instead of vanilla. Uncompressed surfaces are also not merely
+	// unsupported -- R8_G8_B8_A8 is the format of render targets and the scan buffer, so admitting
+	// one here would resize or reformat a framebuffer.
+	if (!this->overwriteInfo.hasResolutionOverwrite && LatteTextureReplace::IsEnabled() &&
+		(Latte::IsCompressedFormat(format) || LatteTextureReplace::IsReplaceableUncompressed(format)))
+	{
+		LatteAddrLib::AddrSurfaceInfo_OUT _replSI;
+		LatteAddrLib::GX2CalculateSurfaceInfo(format, width, height, depth, dim, Latte::MakeGX2TileMode(tileMode), 0, 0, &_replSI);
+		uint64 _replHash = LatteTextureReplace::HashGuest(this->physAddress, (uint32)_replSI.surfSize, width * height, format);
+		LatteTextureReplace::ReplacementInfo _ri;
+		if (LatteTextureReplace::GetInfo(_replHash, _ri))
+		{
+			this->overwriteInfo.hasResolutionOverwrite = true;
+			this->replOverwriteIsOurs = true;
+			this->overwriteInfo.width = _ri.width;
+			this->overwriteInfo.height = _ri.height;
+			this->overwriteInfo.depth = depth;
+			if (_ri.hasFormat && _ri.gx2Format != (uint32)format)
+			{
+				this->overwriteInfo.hasFormatOverwrite = true;
+				this->overwriteInfo.format = (sint32)_ri.gx2Format;
 			}
 		}
 	}

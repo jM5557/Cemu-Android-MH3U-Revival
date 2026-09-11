@@ -128,10 +128,12 @@ public:
 	// dump options
 	[[nodiscard]] static bool DumpShadersEnabled();
 	[[nodiscard]] static bool DumpTexturesEnabled();
+	[[nodiscard]] static bool LoadCustomTexturesEnabled();
 	[[nodiscard]] static bool DumpRecompilerFunctionsEnabled();
 	[[nodiscard]] static bool DumpLibcurlRequestsEnabled();
 	static void EnableDumpShaders(bool state);
 	static void EnableDumpTextures(bool state);
+	static void EnableLoadCustomTextures(bool state);
 	static void EnableDumpRecompilerFunctions(bool state);
 	static void EnableDumpLibcurlRequests(bool state);
 
@@ -146,6 +148,7 @@ private:
 	// dump options
 	inline static bool s_dump_shaders = false;
 	inline static bool s_dump_textures = false;
+	inline static bool s_load_custom_textures = true; // global kill switch; per-game control lives in the game list context menu
 	inline static bool s_dump_recompiler_functions = false;
 	inline static bool s_dump_libcurl_requests = false;
 

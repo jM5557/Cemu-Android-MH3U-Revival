@@ -2,6 +2,8 @@
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
 #include "config/ActiveSettings.h"
 #include "Cafe/CafeSystem.h"
+#include "Cafe/HW/Latte/Core/LatteTextureReplace.h"
+uint32 LatteTexture_CalculateTextureDataHash(LatteTexture* hostTexture);
 
 //#define BENCHMARK_TEXTURE_DECODING		// if defined, time it takes to decode textures will be measured and logged to log.txt
 
@@ -578,9 +580,28 @@ void LatteTextureLoader_loadTextureDataIntoSlice(LatteTexture* hostTexture, sint
 		cemu_assert_debug(depth == hostTexture->depth);
 	}
 	cemu_assert_debug(mipLevels == hostTexture->mipLevels);
-	if (hostTexture->overwriteInfo.hasResolutionOverwrite || hostTexture->overwriteInfo.hasFormatOverwrite)
+	const bool overwritten = hostTexture->overwriteInfo.hasResolutionOverwrite || hostTexture->overwriteInfo.hasFormatOverwrite;
+	// Keyed on where the overwrite came from rather than on the format. A render target resized by
+	// a graphic pack has 'overwritten' set too, but nothing matched it, so it never gets in here.
+	if (overwritten && LatteTextureReplace::IsEnabled() && hostTexture->replOverwriteIsOurs)
 	{
-		// todo - ideally, we should scale/convert the data to the new format and resolution
+		const LatteTextureReplace_Entry* slice = LatteTextureReplace::GetSlice(hostTexture->replStrongHash, mipIndex);
+		if (slice)
+		{
+			sint32 hostW = std::max<sint32>(1, (hostTexture->overwriteInfo.hasResolutionOverwrite ? hostTexture->overwriteInfo.width  : hostTexture->width)  >> mipIndex);
+			sint32 hostH = std::max<sint32>(1, (hostTexture->overwriteInfo.hasResolutionOverwrite ? hostTexture->overwriteInfo.height : hostTexture->height) >> mipIndex);
+			if (slice->width == hostW && slice->height == hostH)
+			{
+				g_renderer->texture_loadSlice(hostTexture, hostW, hostH, depth, slice->data, sliceIndex, mipIndex, slice->dataSize);
+				return;
+			}
+			// replacement found but its size doesn't match the host -> stale overwrite on a reused
+			// texture object; flag it and let LatteTexture_RecheckReplacements() recreate it
+			hostTexture->needsReplRecreate = true;
+		}
+	}
+	if (overwritten)
+	{
 		g_renderer->texture_clearSlice(hostTexture, sliceIndex, mipIndex);
 	}
 	else
@@ -609,6 +630,76 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	TextureDecoder* texDecoder = nullptr;
 	texDecoder = g_renderer->texture_chooseDecodedFormat(format, tex->isDepth, dim, width, height);
 
+	// [texture replacement] Decide the auto-overwrite HERE, from the real loaded base data, BEFORE
+	// AllocateOnHost. The constructor hook (Hook 1) can false-match on stale buffer contents left by a
+	// previously-equipped item, sizing the host wrong (e.g. 256 when the DDS is 512) which then blanks
+	// the texture. Recomputing here on the actual data fixes the size before the host is allocated.
+	// Our own full-data content hash of the mip0 surface. Recomputed on every load so a reused
+	// texture object never carries a stale key. Cemu's texDataHash2 is NOT usable here: it samples
+	// only ~296 bytes and collides between distinct textures (e.g. monster subspecies).
+	// Uncompressed surfaces the GPU owns are skipped before the hash runs. RGBA8 is both what the
+	// UI sheets use and what render targets use, so the format alone cannot tell them apart --
+	// but a texture the GPU has drawn into, or one resized by a graphic pack rather than by us,
+	// is a render target. Neither is ever true of artwork loaded from the game's own files, so
+	// nothing replaceable is affected. This matters because these are the large surfaces (~8 MB
+	// at 1080p) and they reload constantly, while their contents change every frame and could
+	// never match a file on disk. The compressed formats need no such test: nothing renders into
+	// a BCn surface.
+	const bool _replGpuOwned = tex->isUpdatedOnGPU ||
+		(tex->overwriteInfo.hasResolutionOverwrite && !tex->replOverwriteIsOurs);
+	const bool _replUncompressed = LatteTextureReplace::IsReplaceableUncompressed(format) && !_replGpuOwned;
+	if (mipIndex == 0 && sliceIndex == 0 && LatteTextureReplace::IsEnabled() && (Latte::IsCompressedFormat(format) || _replUncompressed))
+		tex->replStrongHash = LatteTextureReplace::HashGuest(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format);
+
+	if (tex->isDataDefined == false && LatteTextureReplace::IsEnabled() && Latte::IsCompressedFormat(format))
+	{
+		// size the host from the replacement BEFORE AllocateOnHost -- the constructor hook can
+		// false-match on stale buffer contents left by a previously-equipped item.
+		tex->texDataPtrLow  = physImagePtr + textureLoader.minOffsetOutdated;
+		tex->texDataPtrHigh = physImagePtr + textureLoader.maxOffsetOutdated;
+		LatteTextureReplace::ReplacementInfo _ri;
+		if (LatteTextureReplace::GetInfo(tex->replStrongHash, _ri))
+		{
+			tex->overwriteInfo.hasResolutionOverwrite = true;
+			tex->replOverwriteIsOurs = true;
+			tex->overwriteInfo.width = _ri.width;
+			tex->overwriteInfo.height = _ri.height;
+			tex->overwriteInfo.depth = tex->depth;
+			if (_ri.hasFormat && _ri.gx2Format != (uint32)format) { tex->overwriteInfo.hasFormatOverwrite = true; tex->overwriteInfo.format = (sint32)_ri.gx2Format; }
+		}
+		else if (tex->replOverwriteIsOurs)
+		{
+			// Hook 1 false-matched on stale data but the real texture has no replacement -> undo it (render vanilla, not blank)
+			// Keyed on provenance, not on format: a graphic pack's resolution overwrite must never be
+			// touched here, because clearing one resizes the framebuffer.
+			tex->overwriteInfo.hasResolutionOverwrite = false;
+			tex->overwriteInfo.hasFormatOverwrite = false;
+			tex->replOverwriteIsOurs = false;
+		}
+	}
+	else if (tex->isDataDefined == false && LatteTextureReplace::IsEnabled() && _replUncompressed)
+	{
+		// Uncompressed: only ever acted on when the hash matches. A render target reaches here too,
+		// finds no match, and leaves with nothing written -- not its data pointers, not its overwrite.
+		LatteTextureReplace::ReplacementInfo _ri;
+		if (LatteTextureReplace::GetInfo(tex->replStrongHash, _ri))
+		{
+			tex->texDataPtrLow  = physImagePtr + textureLoader.minOffsetOutdated;
+			tex->texDataPtrHigh = physImagePtr + textureLoader.maxOffsetOutdated;
+			tex->overwriteInfo.hasResolutionOverwrite = true;
+			tex->replOverwriteIsOurs = true;
+			tex->overwriteInfo.width = _ri.width;
+			tex->overwriteInfo.height = _ri.height;
+			tex->overwriteInfo.depth = tex->depth;
+			if (_ri.hasFormat && _ri.gx2Format != (uint32)format) { tex->overwriteInfo.hasFormatOverwrite = true; tex->overwriteInfo.format = (sint32)_ri.gx2Format; }
+		}
+		else if (tex->replOverwriteIsOurs)
+		{
+			tex->overwriteInfo.hasResolutionOverwrite = false;
+			tex->overwriteInfo.hasFormatOverwrite = false;
+			tex->replOverwriteIsOurs = false;
+		}
+	}
 	if (tex->isDataDefined == false)
 	{
 		tex->AllocateOnHost();
@@ -685,7 +776,17 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	if (textureLoader.dump)
 	{
 		fs::path path = ActiveSettings::GetUserDataPath("dump/textures");
-		path /= fmt::format("{:08x}_fmt{:04x}_slice{:d}_mip{:02d}_{:d}x{:d}_tm{:02d}.tga", physImagePtr, (uint32)tex->format, sliceIndex, mipIndex, tex->width, tex->height, tileMode);
+		if (LatteTextureReplace::IsEnabled())
+		{
+			// name the dump with the same key the replacement loader matches on, so a dumped
+			// filename can be reused verbatim as the replacement filename
+			uint64 texHashForDump = tex->replStrongHash;
+			if (texHashForDump == 0)
+				texHashForDump = LatteTextureReplace::HashGuestRaw(physImagePtr, (uint32)textureLoader.maxOffsetOutdated);
+			path /= fmt::format("{:016x}_{:d}x{:d}_fmt{:04x}_mip{:02d}.tga", texHashForDump, tex->width, tex->height, (uint32)tex->format, mipIndex);
+		}
+		else
+			path /= fmt::format("{:08x}_fmt{:04x}_slice{:d}_mip{:02d}_{:d}x{:d}_tm{:02d}.tga", physImagePtr, (uint32)tex->format, sliceIndex, mipIndex, tex->width, tex->height, tileMode);
 		tga_write_rgba(path, textureLoader.width, textureLoader.height, textureLoader.dumpRGBA);
 		free(textureLoader.dumpRGBA);
 	}

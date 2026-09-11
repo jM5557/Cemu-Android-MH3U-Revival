@@ -149,8 +149,16 @@ public:
 	MPTR texDataPtrLow{};
 	MPTR texDataPtrHigh{};
 	uint32 texDataHash2{};
+	uint64 replStrongHash{}; // [texture replacement] full-data content hash (our lookup key)
 	// state
 	bool isUpdatedOnGPU{ false }; // set if any GPU-side operation modified this texture and strict one-way RAM->VRAM memory mirroring no longer applies
+	bool replGaveUp{ false };     // [texture replacement] stop re-checking this texture for a late replacement
+	bool needsReplRecreate{ false }; // [texture replacement] stale overwrite detected -> recreate to fix size
+	// [texture replacement] true when this texture's overwrite came from a matched replacement
+	// file. A graphic pack resolution rule also sets an overwrite -- that is how render targets
+	// get one -- so the flag records WHO set it rather than guessing from the format.
+	bool replOverwriteIsOurs{ false };
+	uint16 replRecheckCount{ 0 }; // [texture replacement] how many times we've re-checked for a replacement
 	bool enableReadback{ false }; // if true, texture will be mirrored back to CPU RAM under specific circumstances
 	// invalidation
 	bool forceInvalidate{};
@@ -362,3 +370,4 @@ void LatteTexture_MarkDynamicTextureAsChanged(LatteTextureView* textureView, sin
 void LatteTexture_UpdateTextureFromDynamicChanges(LatteTexture* texture);
 
 void LatteTexture_UpdateDataToLatest(LatteTexture* texture);
+void LatteTexture_RecheckReplacements(); // [texture replacement] surgical late-match recreate

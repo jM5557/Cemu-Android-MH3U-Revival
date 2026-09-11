@@ -40,6 +40,7 @@ typedef struct
 
 #define ASYNC_CMD_FORCE_TEXTURE_READBACK		1
 #define ASYNC_CMD_DELETE_SHADER					2
+#define ASYNC_CMD_RELOAD_TEXTURES				4
 
 std::queue<LatteAsyncCommand_t> LatteAsyncCommandQueue;
 
@@ -82,6 +83,16 @@ void LatteAsyncCommands_queueDeleteShader(uint64 shaderBaseHash, uint64 shaderAu
 	swl_gpuAsyncCommands.UnlockWrite();
 }
 
+void LatteAsyncCommands_queueReloadTextures()
+{
+	LatteAsyncCommand_t asyncCommand = {};
+	asyncCommand.type = ASYNC_CMD_RELOAD_TEXTURES;
+
+	swl_gpuAsyncCommands.LockWrite();
+	LatteAsyncCommandQueue.push(asyncCommand);
+	swl_gpuAsyncCommands.UnlockWrite();
+}
+
 void LatteAsyncCommands_waitUntilAllProcessed()
 {
 	while (LatteAsyncCommandQueue.empty() == false)
@@ -98,6 +109,14 @@ void LatteAsyncCommands_checkAndExecute()
 	// quick check if queue is empty (requires no lock)
 	if (Latte_GetStopSignal())
 		LatteThread_Exit();
+	// [texture replacement] periodic surgical re-check: rebuild only textures that missed their
+	// replacement at creation (no full flush -> no screen blink)
+	static uint32 s_lastReplRecheckFrame = 0;
+	if ((sint32)(LatteGPUState.frameCounter - s_lastReplRecheckFrame) > 30)
+	{
+		s_lastReplRecheckFrame = LatteGPUState.frameCounter;
+		LatteTexture_RecheckReplacements();
+	}
 	if (LatteAsyncCommandQueue.empty())
 		return;
 	swl_gpuAsyncCommands.LockWrite();
@@ -126,6 +145,10 @@ void LatteAsyncCommands_checkAndExecute()
 		else if (asyncCommand.type == ASYNC_CMD_DELETE_SHADER)
 		{
 			LatteSHRC_RemoveFromCacheByHash(asyncCommand.deleteShader.shaderBaseHash, asyncCommand.deleteShader.shaderAuxHash, asyncCommand.deleteShader.shaderType);
+		}
+		else if (asyncCommand.type == ASYNC_CMD_RELOAD_TEXTURES)
+		{
+			LatteTC_UnloadAllTextures();
 		}
 		else
 		{

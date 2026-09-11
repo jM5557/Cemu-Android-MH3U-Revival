@@ -171,6 +171,11 @@ bool ActiveSettings::DumpTexturesEnabled()
 	return s_dump_textures;
 }
 
+bool ActiveSettings::LoadCustomTexturesEnabled()
+{
+	return s_load_custom_textures;
+}
+
 bool ActiveSettings::DumpRecompilerFunctionsEnabled()
 {
 	return s_dump_recompiler_functions;
@@ -189,6 +194,11 @@ void ActiveSettings::EnableDumpShaders(bool state)
 void ActiveSettings::EnableDumpTextures(bool state)
 {
 	s_dump_textures = state;
+}
+
+void ActiveSettings::EnableLoadCustomTextures(bool state)
+{
+	s_load_custom_textures = state;
 }
 
 void ActiveSettings::EnableDumpRecompilerFunctions(bool state)
