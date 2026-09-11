@@ -1935,7 +1935,7 @@ COSModule* RPLLoader_GetHLECafeOSModule(std::string_view moduleName)
 }
 
 // increment reference counter for module
-void RPLLoader_AddDependency(std::string_view name)
+void RPLLoader_AddDependency(std::string_view name, bool isMainExecutable)
 {
 	cemu_assert(!name.empty());
 	// get module name from path
