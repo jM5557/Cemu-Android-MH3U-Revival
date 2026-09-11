@@ -294,6 +294,7 @@ public:
 	void texture_releaseTextureUploadBuffer(uint8* mem) override;
 
 	TextureDecoder* texture_chooseDecodedFormat(Latte::E_GX2SURFFMT format, bool isDepth, Latte::E_DIM dim, uint32 width, uint32 height) override;
+	bool texture_isNativeCompressedFormat(Latte::E_GX2SURFFMT format) override;
 
 	void texture_clearSlice(LatteTexture* hostTexture, sint32 sliceIndex, sint32 mipIndex) override;
 	void texture_clearColorSlice(LatteTexture* hostTexture, sint32 sliceIndex, sint32 mipIndex, float r, float g, float b, float a) override;

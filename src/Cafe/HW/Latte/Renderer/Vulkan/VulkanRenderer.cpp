@@ -3484,6 +3484,30 @@ void VulkanRenderer::texture_releaseTextureUploadBuffer(uint8* mem)
 	memoryManager->TextureUploadBufferRelease(mem);
 }
 
+bool VulkanRenderer::texture_isNativeCompressedFormat(Latte::E_GX2SURFFMT format)
+{
+	switch (format)
+	{
+	case Latte::E_GX2SURFFMT::BC1_UNORM:
+	case Latte::E_GX2SURFFMT::BC1_SRGB:
+		return m_supportedFormatInfo.fmt_bc1;
+	case Latte::E_GX2SURFFMT::BC2_UNORM:
+	case Latte::E_GX2SURFFMT::BC2_SRGB:
+		return m_supportedFormatInfo.fmt_bc2;
+	case Latte::E_GX2SURFFMT::BC3_UNORM:
+	case Latte::E_GX2SURFFMT::BC3_SRGB:
+		return m_supportedFormatInfo.fmt_bc3;
+	case Latte::E_GX2SURFFMT::BC4_UNORM:
+	case Latte::E_GX2SURFFMT::BC4_SNORM:
+		return m_supportedFormatInfo.fmt_bc4;
+	case Latte::E_GX2SURFFMT::BC5_UNORM:
+	case Latte::E_GX2SURFFMT::BC5_SNORM:
+		return m_supportedFormatInfo.fmt_bc5;
+	default:
+		return false;
+	}
+}
+
 TextureDecoder* VulkanRenderer::texture_chooseDecodedFormat(Latte::E_GX2SURFFMT format, bool isDepth, Latte::E_DIM dim, uint32 width, uint32 height)
 {
 	FormatInfoVK texFormatInfo{};

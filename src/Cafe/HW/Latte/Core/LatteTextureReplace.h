@@ -34,6 +34,13 @@ namespace LatteTextureReplace
 	bool IsReplaceableUncompressed(Latte::E_GX2SURFFMT format);
 	const LatteTextureReplace_Entry* GetSlice(uint64_t contentHash, int mipIndex);
 
+	// Same slice, decoded to linear R8G8B8A8 and cached. Used when the graphics backend reports
+	// texture_isNativeCompressedFormat()==false for the replacement's format, which is the normal
+	// case on Adreno and Mali (no BC support in Vulkan). Returns nullptr if the format cannot be
+	// decoded; the caller should then fall through to clearing the slice rather than uploading
+	// BCn blocks into an RGBA8 image, which produces garbage rather than a visible failure.
+	const LatteTextureReplace_Entry* GetSliceRGBA8(uint64_t contentHash, int mipIndex);
+
 	// size/format of the replacement, used to size the host texture (no [TextureRedefine] needed)
 	struct ReplacementInfo { int width=0, height=0; bool hasFormat=false; uint32_t gx2Format=0; };
 	bool GetInfo(uint64_t contentHash, ReplacementInfo& out);

@@ -1,4 +1,5 @@
 #include "Cafe/HW/Latte/Core/LatteTextureReplace.h"
+#include "Cafe/HW/Latte/Core/LatteTextureLoader.h"
 #include "config/ActiveSettings.h"
 #include "Cafe/CafeSystem.h"
 #include "util/helpers/helpers.h"
@@ -63,7 +64,7 @@ namespace LatteTextureReplace
 	}
 
 	struct FileRef { fs::path path; int width=0, height=0; uint32_t gx2Format=0; bool probed=false; std::string pack; };
-	struct HashGroup { std::unordered_map<int,FileRef> mips; std::unordered_map<int,LatteTextureReplace_Entry> decoded; };
+	struct HashGroup { std::unordered_map<int,FileRef> mips; std::unordered_map<int,LatteTextureReplace_Entry> decoded; std::unordered_map<int,LatteTextureReplace_Entry> rgba8; };
 	struct TitleSettings { bool enabled=true; std::vector<std::string> packs; };
 
 	static std::mutex s_mutex;
@@ -105,7 +106,7 @@ namespace LatteTextureReplace
 			return def; };
 		s_skipMip=b("skip_mipmap",s_skipMip);
 	}
-	static void freeAll(){ for(auto&[h,g]:s_index) for(auto&[m,e]:g.decoded) if(e.data) free(e.data); s_index.clear(); }
+	static void freeAll(){ for(auto&[h,g]:s_index){ for(auto&[m,e]:g.decoded) if(e.data) free(e.data); for(auto&[m,e]:g.rgba8) if(e.data) free(e.data); } s_index.clear(); }
 
 	// Every pack folder that exists for a title, sorted. Caller must not hold s_mutex expectations:
 	// this only touches the filesystem.
@@ -351,6 +352,105 @@ namespace LatteTextureReplace
 			out.push_back(line);
 		}
 		return out;
+	}
+
+	// ---- CPU-side BCn -> R8G8B8A8 -------------------------------------------------------------
+	// The DDS payload is linear (row-major 4x4 blocks), unlike guest textures which are tiled, so
+	// the TextureDecoder_* classes cannot be reused directly -- but their per-block helpers can.
+	static bool decodeBCnLinear(const LatteTextureReplace_Entry& src, std::vector<uint8_t>& out)
+	{
+		const uint32_t fmt = src.gx2Format & ~0x400u; // ignore the sRGB bit: the host image carries it
+		int bytesPerBlock;
+		switch (fmt)
+		{
+		case 0x031: bytesPerBlock = 8;  break; // BC1
+		case 0x032: bytesPerBlock = 16; break; // BC2
+		case 0x033: bytesPerBlock = 16; break; // BC3
+		case 0x034: bytesPerBlock = 8;  break; // BC4
+		case 0x035: bytesPerBlock = 16; break; // BC5
+		default: return false;
+		}
+		const int w = src.width, h = src.height;
+		if (w <= 0 || h <= 0 || !src.data)
+			return false;
+		const int blocksX = std::max(1, (w + 3) / 4);
+		const int blocksY = std::max(1, (h + 3) / 4);
+		if ((uint64_t)blocksX * blocksY * bytesPerBlock > src.dataSize)
+			return false;
+		out.assign((size_t)w * h * 4, 0);
+		for (int by = 0; by < blocksY; by++)
+		{
+			for (int bx = 0; bx < blocksX; bx++)
+			{
+				uint8_t* blockData = src.data + (size_t)(by * blocksX + bx) * bytesPerBlock;
+				float rgba[4 * 4 * 4] = {};
+				float single[4 * 4 * 1] = {};
+				float dual[4 * 4 * 2] = {};
+				switch (fmt)
+				{
+				case 0x031: decodeBC1Block(blockData, rgba); break;
+				case 0x032: decodeBC2Block_UNORM(blockData, rgba); break;
+				case 0x033: decodeBC3Block_UNORM(blockData, rgba); break;
+				case 0x034: decodeBC4Block_UNORM(blockData, single); break;
+				case 0x035: decodeBC5Block_UNORM(blockData, dual); break;
+				}
+				const int blockW = std::min(4, w - bx * 4);
+				const int blockH = std::min(4, h - by * 4);
+				for (int py = 0; py < blockH; py++)
+				{
+					for (int px = 0; px < blockW; px++)
+					{
+						const size_t o = ((size_t)(by * 4 + py) * w + (bx * 4 + px)) * 4;
+						float r, g, b, a;
+						if (fmt == 0x034)      { r = single[px + py * 4]; g = 0.0f; b = 0.0f; a = 1.0f; }
+						else if (fmt == 0x035) { r = dual[(px + py * 4) * 2 + 0]; g = dual[(px + py * 4) * 2 + 1]; b = 0.0f; a = 1.0f; }
+						else
+						{
+							r = rgba[(px + py * 4) * 4 + 0]; g = rgba[(px + py * 4) * 4 + 1];
+							b = rgba[(px + py * 4) * 4 + 2]; a = rgba[(px + py * 4) * 4 + 3];
+						}
+						auto q = [](float v) -> uint8_t { return (uint8_t)std::clamp(v * 255.0f + 0.5f, 0.0f, 255.0f); };
+						out[o + 0] = q(r); out[o + 1] = q(g); out[o + 2] = q(b); out[o + 3] = q(a);
+					}
+				}
+			}
+		}
+		return true;
+	}
+
+	const LatteTextureReplace_Entry* GetSliceRGBA8(uint64_t contentHash, int mipIndex)
+	{
+		// GetSlice takes s_mutex itself, so it must be called before we lock.
+		const LatteTextureReplace_Entry* src = GetSlice(contentHash, mipIndex);
+		if (!src)
+			return nullptr;
+		// already uncompressed on disk -> nothing to do
+		if ((src->gx2Format & ~0x400u) == 0x01a)
+			return src;
+		std::scoped_lock lock(s_mutex);
+		auto it = s_index.find(contentHash);
+		if (it == s_index.end())
+			return nullptr;
+		HashGroup& g = it->second;
+		if (auto d = g.rgba8.find(mipIndex); d != g.rgba8.end() && d->second.data)
+			return &d->second;
+		std::vector<uint8_t> decoded;
+		if (!decodeBCnLinear(*src, decoded))
+		{
+			cemuLog_log(LogType::Force, "[TextureReplace] cannot decode format 0x{:03x} to RGBA8 (hash {:016x} mip {})", src->gx2Format, contentHash, mipIndex);
+			return nullptr;
+		}
+		LatteTextureReplace_Entry ent;
+		ent.data = (uint8_t*)malloc(decoded.size());
+		if (!ent.data)
+			return nullptr;
+		memcpy(ent.data, decoded.data(), decoded.size());
+		ent.width = src->width;
+		ent.height = src->height;
+		ent.dataSize = (uint32_t)decoded.size();
+		ent.gx2Format = 0x01a | (src->gx2Format & 0x400u);
+		g.rgba8[mipIndex] = ent;
+		return &g.rgba8[mipIndex];
 	}
 
 	void SetTitleSettings(uint64_t titleId, bool enabled, const std::vector<std::string>& packs){

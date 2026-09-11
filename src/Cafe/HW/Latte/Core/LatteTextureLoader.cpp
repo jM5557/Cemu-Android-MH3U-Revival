@@ -592,8 +592,25 @@ void LatteTextureLoader_loadTextureDataIntoSlice(LatteTexture* hostTexture, sint
 			sint32 hostH = std::max<sint32>(1, (hostTexture->overwriteInfo.hasResolutionOverwrite ? hostTexture->overwriteInfo.height : hostTexture->height) >> mipIndex);
 			if (slice->width == hostW && slice->height == hostH)
 			{
-				g_renderer->texture_loadSlice(hostTexture, hostW, hostH, depth, slice->data, sliceIndex, mipIndex, slice->dataSize);
-				return;
+				// The host image is only a BCn image if the backend supports that format natively.
+				// Where it doesn't (Adreno/Mali expose no BC in Vulkan) the backend silently decoded
+				// the guest texture to R8G8B8A8, so the replacement has to be decoded to match --
+				// uploading raw blocks into an RGBA8 image renders garbage instead of failing.
+				const Latte::E_GX2SURFFMT replFormat = (Latte::E_GX2SURFFMT)slice->gx2Format;
+				if (Latte::IsCompressedFormat(replFormat) && !g_renderer->texture_isNativeCompressedFormat(replFormat))
+				{
+					const LatteTextureReplace_Entry* rgbaSlice = LatteTextureReplace::GetSliceRGBA8(hostTexture->replStrongHash, mipIndex);
+					if (rgbaSlice)
+					{
+						g_renderer->texture_loadSlice(hostTexture, hostW, hostH, depth, rgbaSlice->data, sliceIndex, mipIndex, rgbaSlice->dataSize);
+						return;
+					}
+				}
+				else
+				{
+					g_renderer->texture_loadSlice(hostTexture, hostW, hostH, depth, slice->data, sliceIndex, mipIndex, slice->dataSize);
+					return;
+				}
 			}
 			// replacement found but its size doesn't match the host -> stale overwrite on a reused
 			// texture object; flag it and let LatteTexture_RecheckReplacements() recreate it

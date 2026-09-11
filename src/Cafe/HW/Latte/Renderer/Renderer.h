@@ -106,6 +106,12 @@ public:
 
 	virtual TextureDecoder* texture_chooseDecodedFormat(Latte::E_GX2SURFFMT format, bool isDepth, Latte::E_DIM dim, uint32 width, uint32 height) = 0;
 
+	// [texture replacement] True when the backend uploads this GX2 format as native compressed
+	// blocks. When false the backend transparently decodes to R8G8B8A8 (the usual case on Adreno
+	// and Mali, which expose no BC support), and any custom-texture payload must be decoded on the
+	// CPU before upload instead of being handed over as raw BCn blocks.
+	virtual bool texture_isNativeCompressedFormat(Latte::E_GX2SURFFMT format) { return Latte::IsCompressedFormat(format); }
+
 	virtual void texture_clearSlice(LatteTexture* hostTexture, sint32 sliceIndex, sint32 mipIndex) = 0;
 	virtual void texture_loadSlice(LatteTexture* hostTexture, sint32 width, sint32 height, sint32 depth, void* pixelData, sint32 sliceIndex, sint32 mipIndex, uint32 compressedImageSize) = 0;
 	virtual void texture_clearColorSlice(LatteTexture* hostTexture, sint32 sliceIndex, sint32 mipIndex, float r, float g, float b, float a) = 0;
