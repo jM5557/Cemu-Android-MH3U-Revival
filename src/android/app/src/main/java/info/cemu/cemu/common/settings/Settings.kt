@@ -39,12 +39,31 @@ data class InputOverlaySettings(
     val inputOverlayRectMap: Map<OverlayInputConfig, InputOverlayRect> = emptyMap(),
 )
 
+/**
+ * Per-title custom texture selection. A title with no entry here has never been configured and
+ * defaults to "enabled, every pack in its folder", matching the emulator core's own default, so a
+ * pack dropped into load/textures/<titleId>/ works with no setup.
+ */
+@Serializable
+data class CustomTextureTitleSettings(
+    val enabled: Boolean = true,
+    val packs: List<String> = emptyList(),
+)
+
+@Serializable
+data class CustomTextureSettings(
+    val globallyEnabled: Boolean = true,
+    /** Keyed by title id as a 16-digit lowercase hex string. */
+    val titles: Map<String, CustomTextureTitleSettings> = emptyMap(),
+)
+
 @Serializable
 data class AppSettings(
     val guiSettings: GuiSettings = GuiSettings(),
     val emulationSettings: EmulationSettings = EmulationSettings(),
     val inputOverlaySettings: InputOverlaySettings = InputOverlaySettings(),
     val hotkeySettings: Map<HotkeyAction, HotkeyCombo> = emptyMap(),
+    val customTextureSettings: CustomTextureSettings = CustomTextureSettings(),
 )
 
 object AppSettingsSerializer : Serializer<AppSettings> {

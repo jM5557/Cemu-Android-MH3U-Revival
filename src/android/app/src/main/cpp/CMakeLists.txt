@@ -6,6 +6,7 @@ add_library(CemuAndroid SHARED
         Image.cpp
         JNIUtils.cpp
         NativeAccount.cpp
+        NativeCustomTextures.cpp
         NativeActiveSettings.cpp
         NativeEmulatedUSBDevices.cpp
         NativeEmulation.cpp
@@ -15,6 +16,7 @@ add_library(CemuAndroid SHARED
         NativeLib.cpp
         NativeLocalization.cpp
         NativeLogging.cpp
+        NativeMH3U.cpp
         NativeSettings.cpp
         NativeSwkbd.cpp
         WuaConverter.cpp

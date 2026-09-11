@@ -78,6 +78,7 @@ fun GamesListScreen(
     gamesListViewModel: GamesListViewModel = viewModel(),
     goToGameDetails: (Game) -> Unit,
     goToGameEditProfile: (Game) -> Unit,
+    goToGameCustomTextures: (Game) -> Unit,
     startGame: (Game) -> Unit,
     goToSettings: () -> Unit,
     goToTitleManager: () -> Unit,
@@ -176,6 +177,7 @@ fun GamesListScreen(
                 startGame = startGame,
                 goToGameDetails = goToGameDetails,
                 goToGameEditProfile = goToGameEditProfile,
+                goToGameCustomTextures = goToGameCustomTextures,
                 createShortcut = {
                     if (!tryCreateShortcut(it)) {
                         snackbarHostState.showMessage(
@@ -203,6 +205,7 @@ private fun GameList(
     startGame: (Game) -> Unit,
     goToGameDetails: (Game) -> Unit,
     goToGameEditProfile: (Game) -> Unit,
+    goToGameCustomTextures: (Game) -> Unit,
     setFavorite: (Game, Boolean) -> Unit,
     createShortcut: (Game) -> Unit,
     deleteShaderCaches: (Game) -> Unit,
@@ -224,6 +227,9 @@ private fun GameList(
                 },
                 onEditGameProfile = {
                     goToGameEditProfile(game)
+                },
+                onEditCustomTextures = {
+                    goToGameCustomTextures(game)
                 },
                 onRemoveShaderCaches = { showDeleteShaderConfirmationDialog = true },
                 onAboutTitle = {
@@ -268,6 +274,7 @@ private fun GameListItem(
     onStartGame: (Game) -> Unit,
     onIsFavoriteChanged: (Boolean) -> Unit,
     onEditGameProfile: () -> Unit,
+    onEditCustomTextures: () -> Unit,
     onRemoveShaderCaches: () -> Unit,
     onAboutTitle: () -> Unit,
     onCreateShortcut: () -> Unit,
@@ -319,6 +326,7 @@ private fun GameListItem(
             game = game,
             onIsFavoriteChanged = onIsFavoriteChanged,
             onEditGameProfile = onEditGameProfile,
+            onEditCustomTextures = onEditCustomTextures,
             onRemoveShaderCaches = onRemoveShaderCaches,
             onAboutTitle = onAboutTitle,
             onCreateShortcut = onCreateShortcut,
@@ -332,6 +340,7 @@ private fun GameContextMenu(
     onDismissRequest: () -> Unit,
     onIsFavoriteChanged: (Boolean) -> Unit,
     onEditGameProfile: () -> Unit,
+    onEditCustomTextures: () -> Unit,
     onRemoveShaderCaches: () -> Unit,
     onAboutTitle: () -> Unit,
     onCreateShortcut: () -> Unit,
@@ -368,6 +377,10 @@ private fun GameContextMenu(
         GameContextMenuItem(
             onClick = onEditGameProfile,
             text = tr("Edit game profile"),
+        )
+        GameContextMenuItem(
+            onClick = onEditCustomTextures,
+            text = tr("Custom textures"),
         )
         GameContextMenuItem(
             enabled = gameTitleHasCaches,

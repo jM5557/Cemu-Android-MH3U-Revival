@@ -68,6 +68,7 @@ fun GeneralSettingsScreen(
             choiceToString = { gamePadPositionToString(it) },
             choices = GamePadPosition.entries,
         )
+        Mh3uServerSection()
     }
 }
 

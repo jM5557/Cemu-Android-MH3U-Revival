@@ -9,6 +9,7 @@ import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.navigation
+import info.cemu.cemu.games.customtextures.CustomTexturesScreen
 import info.cemu.cemu.games.details.GameDetailsScreen
 import info.cemu.cemu.games.list.GamesListScreen
 import info.cemu.cemu.games.profile.GameProfileEditScreen
@@ -27,6 +28,9 @@ private object GameListRoutes {
 
     @Serializable
     object GameProfileEditRoute
+
+    @Serializable
+    object GameCustomTexturesRoute
 }
 
 private inline fun <reified T : Any> NavGraphBuilder.composableGameScreen(
@@ -67,6 +71,10 @@ fun NavGraphBuilder.gamesNavigation(
                     gameViewModel.game = game
                     navController.navigate(GameListRoutes.GameProfileEditRoute)
                 },
+                goToGameCustomTextures = { game ->
+                    gameViewModel.game = game
+                    navController.navigate(GameListRoutes.GameCustomTexturesRoute)
+                },
                 goToGameDetails = { game ->
                     gameViewModel.game = game
                     navController.navigate(GameListRoutes.GameDetailsRoute)
@@ -85,6 +93,12 @@ fun NavGraphBuilder.gamesNavigation(
         }
         composableGameScreen<GameListRoutes.GameProfileEditRoute>(navController) { game ->
             GameProfileEditScreen(
+                game = game,
+                navigateBack = { navController.popBackStack() },
+            )
+        }
+        composableGameScreen<GameListRoutes.GameCustomTexturesRoute>(navController) { game ->
+            CustomTexturesScreen(
                 game = game,
                 navigateBack = { navController.popBackStack() },
             )

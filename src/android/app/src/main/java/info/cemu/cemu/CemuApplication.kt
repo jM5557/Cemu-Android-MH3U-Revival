@@ -5,6 +5,7 @@ import info.cemu.cemu.common.android.context.internalFolder
 import info.cemu.cemu.common.settings.AppSettingsStore
 import info.cemu.cemu.common.ui.localization.setLanguage
 import info.cemu.cemu.common.ui.localization.setTranslations
+import info.cemu.cemu.games.customtextures.CustomTexturesRepository
 import info.cemu.cemu.nativeinterface.NativeActiveSettings.initializeActiveSettings
 import info.cemu.cemu.nativeinterface.NativeActiveSettings.setInternalDir
 import info.cemu.cemu.nativeinterface.NativeActiveSettings.setNativeLibDir
@@ -142,6 +143,11 @@ class CemuApplication : Application() {
         initializeEmulation()
         initializeSwkbd()
         refreshGraphicPacks()
+        // The core keeps per-title custom texture settings in memory only, so the persisted
+        // selection has to be pushed back in once per process, after ActiveSettings knows its paths
+        // and before any title can be launched. Without this every pack loads regardless of what
+        // the user unticked.
+        runBlocking { CustomTexturesRepository.applyAll() }
     }
 
     private val internalCemuDataFolder: String
