@@ -6,6 +6,7 @@
 #include "JNIUtils.h"
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -166,4 +167,66 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_setScanningForMigration
 	// on screen to be recorded.
 	if (CafeSystem::IsTitleRunning())
 		LatteAsyncCommands_queueReloadTextures();
+}
+
+// Full path of rename_map.csv, which lives beside the dumped TGAs.
+extern "C" [[maybe_unused]] JNIEXPORT jstring JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getRenameMapPath(JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return JNIUtils::ToJString(env, (ActiveSettings::GetUserDataPath("dump/textures") / "rename_map.csv").string());
+}
+
+// Number of lines currently in rename_map.csv, or -1 if it does not exist yet. Lets the UI say
+// whether a scan is actually producing anything instead of leaving the user to go looking.
+extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getRenameMapEntryCount([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	std::ifstream in(ActiveSettings::GetUserDataPath("dump/textures") / "rename_map.csv");
+	if (!in.is_open())
+		return -1;
+	jint count = 0;
+	std::string line;
+	while (std::getline(in, line))
+		if (!line.empty())
+			count++;
+	return count;
+}
+
+// Number of files sitting in dump/textures.
+extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getDumpFileCount([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	std::error_code ec;
+	const auto dir = ActiveSettings::GetUserDataPath("dump/textures");
+	if (!std::filesystem::is_directory(dir, ec))
+		return 0;
+	jint count = 0;
+	for (auto& entry : std::filesystem::directory_iterator(dir, ec))
+		if (entry.is_regular_file(ec))
+			count++;
+	return count;
+}
+
+// Deletes everything in dump/textures, including rename_map.csv, and returns how many files went.
+// Subdirectories are left alone. Also clears the in-memory dedup set, otherwise a scan after
+// clearing would record nothing because those textures were already seen this session.
+extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_clearDumpFolder([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	std::error_code ec;
+	const auto dir = ActiveSettings::GetUserDataPath("dump/textures");
+	jint removed = 0;
+	if (std::filesystem::is_directory(dir, ec))
+	{
+		for (auto& entry : std::filesystem::directory_iterator(dir, ec))
+		{
+			if (!entry.is_regular_file(ec))
+				continue;
+			std::error_code removeEc;
+			if (std::filesystem::remove(entry.path(), removeEc))
+				removed++;
+		}
+	}
+	LatteTextureReplace::ResetRenameMapping();
+	return removed;
 }

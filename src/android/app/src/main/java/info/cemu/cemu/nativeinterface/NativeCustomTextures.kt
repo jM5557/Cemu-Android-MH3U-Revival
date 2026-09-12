@@ -52,4 +52,19 @@ object NativeCustomTextures {
 
     @JvmStatic
     external fun setScanningForMigration(enabled: Boolean)
+
+    /** Full path of rename_map.csv, which sits beside the dumped TGAs. */
+    @JvmStatic
+    external fun getRenameMapPath(): String
+
+    /** Lines in rename_map.csv, or -1 when the file does not exist yet. */
+    @JvmStatic
+    external fun getRenameMapEntryCount(): Int
+
+    @JvmStatic
+    external fun getDumpFileCount(): Int
+
+    /** Deletes every file in dump/textures and returns how many were removed. */
+    @JvmStatic
+    external fun clearDumpFolder(): Int
 }

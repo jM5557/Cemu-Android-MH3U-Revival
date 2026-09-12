@@ -16,6 +16,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -199,7 +204,12 @@ private fun TextureDumpToggle() {
  */
 @Composable
 private fun MigrationScanToggle() {
+    val scope = rememberCoroutineScope()
     var scanning by remember { mutableStateOf(NativeCustomTextures.isScanningForMigration()) }
+    var entries by remember { mutableIntStateOf(NativeCustomTextures.getRenameMapEntryCount()) }
+    var dumpFiles by remember { mutableIntStateOf(NativeCustomTextures.getDumpFileCount()) }
+    val mapPath = remember { NativeCustomTextures.getRenameMapPath() }
+    var removedCount by remember { mutableIntStateOf(-1) }
 
     Toggle(
         label = tr("Scan for pack migration"),
@@ -208,6 +218,43 @@ private fun MigrationScanToggle() {
         onCheckedChanged = {
             scanning = it
             NativeCustomTextures.setScanningForMigration(it)
+            entries = NativeCustomTextures.getRenameMapEntryCount()
         },
     )
+    Text(
+        text = if (entries < 0) tr("rename_map.csv: not created yet") else tr("rename_map.csv: {0} entries", entries),
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.padding(horizontal = 8.dp),
+    )
+    Text(
+        text = mapPath,
+        style = MaterialTheme.typography.bodySmall,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(horizontal = 8.dp),
+    )
+
+    HorizontalDivider()
+
+    Button(
+        label = tr("Clear dump folder"),
+        description = if (dumpFiles > 0)
+            tr("Deletes all {0} files in dump/textures, including rename_map.csv", dumpFiles)
+        else
+            tr("Nothing to delete"),
+        onClick = {
+            scope.launch {
+                val removed = withContext(Dispatchers.IO) { NativeCustomTextures.clearDumpFolder() }
+                dumpFiles = NativeCustomTextures.getDumpFileCount()
+                entries = NativeCustomTextures.getRenameMapEntryCount()
+                removedCount = removed
+            }
+        },
+    )
+    if (removedCount >= 0) {
+        Text(
+            text = tr("Removed {0} files", removedCount),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
+    }
 }

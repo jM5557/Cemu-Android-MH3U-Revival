@@ -484,6 +484,10 @@ namespace LatteTextureReplace
 	static std::set<std::pair<uint64_t,int>> s_renameSeen;
 
 	void SetRecordRenameMap(bool enabled){ s_recordRenameMap.store(enabled); }
+
+	// Entries are deduplicated in memory for the life of the process, so deleting rename_map.csv
+	// without clearing that set would leave a later scan recording nothing.
+	void ResetRenameMapping(){ std::scoped_lock lock(s_renameMutex); s_renameSeen.clear(); }
 	bool IsRecordingRenameMap(){ return s_recordRenameMap.load(); }
 
 	void RecordRenameMapping(uint64_t legacyHash, uint64_t newHash, int width, int height, uint32_t gx2Format, int mipIndex)
