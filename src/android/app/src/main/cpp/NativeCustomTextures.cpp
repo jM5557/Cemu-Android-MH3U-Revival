@@ -117,6 +117,21 @@ extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_setDumpingTextures([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enabled)
 {
 	ActiveSettings::EnableDumpTextures(enabled == JNI_TRUE);
+	if (enabled != JNI_TRUE)
+		return;
+	// Two things are needed or the toggle appears to do nothing at all.
+	//
+	// 1. Nothing creates dump/textures. tga_write_rgba goes through FileStream::createFile2, which
+	//    does not create parent directories, so every write fails silently and the folder never
+	//    appears. On desktop the wx app creates the user-data tree at startup; the Android port
+	//    does not.
+	std::error_code ec;
+	std::filesystem::create_directories(ActiveSettings::GetUserDataPath("dump/textures"), ec);
+	// 2. The flag is sampled per texture *load*, and a texture already in the cache is never
+	//    reloaded. Without a flush, enabling mid-session dumps only textures the game happens to
+	//    upload afterwards, which in a static scene is none of them.
+	if (CafeSystem::IsTitleRunning())
+		LatteAsyncCommands_queueReloadTextures();
 }
 
 // <UserData>/dump/textures - where the TGAs and rename_map.csv land.

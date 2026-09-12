@@ -172,7 +172,7 @@ private fun TextureDumpToggle() {
 
     Toggle(
         label = tr("Dump textures"),
-        description = tr("Writes every texture the game draws, plus rename_map.csv for migrating a pack. Resets when the app restarts."),
+        description = tr("Writes every texture the game draws, plus rename_map.csv for migrating a pack. Only dumps textures loaded after this is switched on, so turn it on before launching the game or move between areas. Resets when the app restarts."),
         checked = dumping,
         onCheckedChanged = {
             dumping = it
