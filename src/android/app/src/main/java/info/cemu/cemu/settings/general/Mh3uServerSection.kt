@@ -120,7 +120,7 @@ private fun OnlineGateFilesRow() {
     }
     Button(
         label = tr("Set up dumpless online"),
-        description = tr("Creates the files Cemu requires for online mode and selects a custom network service. Does not overwrite a real dump."),
+        description = tr("Creates the files Cemu requires for online mode, gives the active profile a local online identity, and selects a custom network service. Never overwrites a real dump or an existing NNID."),
         onClick = {
             if (working) return@Button
             working = true
@@ -140,6 +140,6 @@ private fun describeState(): String = when {
     NativeOnlineFiles.isOnlineEnabled() -> "Online mode: ready"
     NativeOnlineFiles.hasRequiredOnlineFiles() ->
         "Online mode: files present, but the account network service is Offline"
-    // (kept distinct so the two halves of IsOnlineEnabled stay diagnosable)
+
     else -> "Online mode: required files are missing"
 }

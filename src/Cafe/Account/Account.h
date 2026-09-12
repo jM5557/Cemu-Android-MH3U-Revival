@@ -93,6 +93,14 @@ public:
 	void SetTimeZoneId(std::string_view timezone_id) { m_timezone_id = timezone_id; }
 	void SetUtcOffset(sint64 utc_offset) { m_utc_offset = utc_offset; }
 
+	// [dumpless online] The four fields GetOnlineAccountError() requires. None of them is ever
+	// validated against a remote service, so a self-hosted revival server can synthesise them
+	// locally instead of linking a real NNID.
+	void SetAccountId(std::string_view account_id) { m_account_id = account_id; }
+	void SetPrincipalId(uint32 principal_id) { m_principal_id = principal_id; }
+	void SetPasswordCacheEnabled(bool enabled) { m_password_cache_enabled = enabled ? 1 : 0; }
+	void SetAccountPasswordCache(const std::array<uint8, 32>& cache) { m_account_password_cache = cache; }
+
 	// this will always return at least one account (default one)
 	static const std::vector<Account>& RefreshAccounts();
 	static void UpdatePersisidDat();

@@ -17,6 +17,7 @@
 // selecting either of those network services with stub files will simply fail.
 
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
+#include "Cafe/Account/Account.h"
 #include "config/ActiveSettings.h"
 #include "config/CemuConfig.h"
 #include "config/NetworkSettings.h"
@@ -27,6 +28,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <random>
 
 namespace
 {
@@ -122,11 +124,52 @@ Java_info_cemu_cemu_nativeinterface_NativeOnlineFiles_generateGateFiles(JNIEnv* 
 	NetworkConfig::InvalidateXMLExistsCache();
 	NetworkConfig::LoadOnce();
 
+	// Account provisioning. Cemu's iosu_act returns ACTResult_NotANetworkAccount for any online
+	// call when Account::IsValidOnlineAccount() is false, which happens before the game ever asks
+	// for a NEX token -- so the gate files alone are not enough. GetOnlineAccountError() wants a
+	// non-empty account id, the password cache enabled and non-zero, and a non-zero principal id.
+	// None is checked against a remote service, so all four can be synthesised locally. This is
+	// what "per-player random unique identity, no sign-up" means in the revival's design.
+	{
+		Account account = Account::GetAccount(ActiveSettings::GetPersistentId());
+		if (!account.IsValidOnlineAccount())
+		{
+			std::random_device rd;
+			std::mt19937 gen(rd());
+			std::uniform_int_distribution<uint32> dist(0, 0xFFFFFFFFu);
+
+			if (account.GetAccountId().empty())
+			{
+				// NNID format: 6-16 chars, alphanumeric plus -_. -- keep it well inside that.
+				char idBuf[24];
+				snprintf(idBuf, sizeof(idBuf), "MH3U%08x", dist(gen));
+				account.SetAccountId(idBuf);
+			}
+			if (account.GetPrincipalId() == 0)
+			{
+				uint32 pid = dist(gen);
+				if (pid == 0)
+					pid = 1; // zero is the "no principal id" sentinel
+				account.SetPrincipalId(pid);
+			}
+			std::array<uint8, 32> cache{};
+			for (auto& byte : cache)
+				byte = (uint8)(dist(gen) & 0xFF);
+			account.SetAccountPasswordCache(cache);
+			account.SetPasswordCacheEnabled(true);
+
+			account.Save();
+			Account::RefreshAccounts();
+		}
+	}
+
 	GetConfig().SetAccountSelectedService(ActiveSettings::GetPersistentId(), NetworkService::Custom);
 	GetConfigHandle().Save();
 
 	if (GetConfig().GetAccountNetworkService(ActiveSettings::GetPersistentId()) != NetworkService::Custom)
 		return JNIUtils::ToJString(env, std::string("network service did not stick; restart the app and try again"));
+	if (!Account::GetAccount(ActiveSettings::GetPersistentId()).IsValidOnlineAccount())
+		return JNIUtils::ToJString(env, std::string("account is still not a valid online account"));
 	return JNIUtils::ToJString(env, std::string());
 }
 
