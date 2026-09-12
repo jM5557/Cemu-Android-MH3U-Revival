@@ -102,3 +102,26 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_reloadTextures([[maybe_
 		return;
 	LatteAsyncCommands_queueReloadTextures();
 }
+
+// Texture dumping is a Debug-menu item on desktop and was never wired up on Android. It is needed
+// here to produce dump/textures/rename_map.csv, which migrates a pack to the current hash scheme.
+// The flag lives in ActiveSettings and is not persisted, so it resets on restart - deliberate,
+// since dumping writes a TGA per texture and is not something to leave on by accident.
+extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_isDumpingTextures([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return ActiveSettings::DumpTexturesEnabled() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_setDumpingTextures([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enabled)
+{
+	ActiveSettings::EnableDumpTextures(enabled == JNI_TRUE);
+}
+
+// <UserData>/dump/textures - where the TGAs and rename_map.csv land.
+extern "C" [[maybe_unused]] JNIEXPORT jstring JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getDumpFolder(JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return JNIUtils::ToJString(env, ActiveSettings::GetUserDataPath("dump/textures").string());
+}

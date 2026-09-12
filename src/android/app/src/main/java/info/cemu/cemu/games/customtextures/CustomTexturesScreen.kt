@@ -13,6 +13,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -111,6 +114,8 @@ fun CustomTexturesScreen(
 
         HorizontalDivider()
 
+        TextureDumpToggle()
+
         Button(
             label = tr("Reload textures now"),
             description = tr("Applies changes to a running game without restarting it"),
@@ -146,5 +151,39 @@ private fun PackRow(
         Column(modifier = Modifier.padding(start = 8.dp)) {
             Text(text = name, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
+    }
+}
+
+/**
+ * Turns Cemu's texture dumping on for this session.
+ *
+ * Two uses: it produces correctly-named TGA files to base a pack on, and it writes
+ * dump/textures/rename_map.csv, which tools/migrate_texture_pack.py uses to rename a pack built
+ * against the old hash scheme. Only textures actually drawn get recorded, so play through the
+ * areas the pack covers.
+ *
+ * Not persisted - it resets when the app restarts, because dumping writes a file per texture.
+ */
+@Composable
+private fun TextureDumpToggle() {
+    var dumping by remember { mutableStateOf(NativeCustomTextures.isDumpingTextures()) }
+    val folder = remember { NativeCustomTextures.getDumpFolder() }
+
+    Toggle(
+        label = tr("Dump textures"),
+        description = tr("Writes every texture the game draws, plus rename_map.csv for migrating a pack. Resets when the app restarts."),
+        checked = dumping,
+        onCheckedChanged = {
+            dumping = it
+            NativeCustomTextures.setDumpingTextures(it)
+        },
+    )
+    if (dumping) {
+        Text(
+            text = folder,
+            style = MaterialTheme.typography.bodySmall,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
     }
 }

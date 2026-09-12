@@ -35,4 +35,14 @@ object NativeCustomTextures {
     /** Drops every cached host texture so replacements are picked up. No-op when nothing is running. */
     @JvmStatic
     external fun reloadTextures()
+
+    /** Writes a TGA per texture plus rename_map.csv. Resets on app restart. */
+    @JvmStatic
+    external fun isDumpingTextures(): Boolean
+
+    @JvmStatic
+    external fun setDumpingTextures(enabled: Boolean)
+
+    @JvmStatic
+    external fun getDumpFolder(): String
 }
