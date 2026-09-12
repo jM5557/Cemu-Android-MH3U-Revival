@@ -238,7 +238,7 @@ private fun MigrationScanToggle() {
     Button(
         label = tr("Clear dump folder"),
         description = if (dumpFiles > 0)
-            tr("Deletes all {0} files in dump/textures, including rename_map.csv", dumpFiles)
+            tr("Deletes all {0} files in dump/textures, including rename_map.csv, and reloads textures so they are written again", dumpFiles)
         else
             tr("Nothing to delete"),
         onClick = {

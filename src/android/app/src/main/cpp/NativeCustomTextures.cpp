@@ -228,5 +228,11 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_clearDumpFolder([[maybe
 		}
 	}
 	LatteTextureReplace::ResetRenameMapping();
+	// Both dumping and the migration scan act per texture *load*. Clearing the folder while a title
+	// is running would otherwise leave nothing to regenerate the files: the texture cache is still
+	// warm, so nothing reloads, so nothing is written and it looks like dumping has broken. Flush
+	// the cache so everything re-uploads through the dump and hash paths again.
+	if (CafeSystem::IsTitleRunning())
+		LatteAsyncCommands_queueReloadTextures();
 	return removed;
 }
