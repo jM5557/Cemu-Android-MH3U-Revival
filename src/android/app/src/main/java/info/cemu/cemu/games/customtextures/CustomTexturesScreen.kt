@@ -28,6 +28,7 @@ import info.cemu.cemu.common.ui.components.Header
 import info.cemu.cemu.common.ui.components.ScreenContent
 import info.cemu.cemu.common.ui.components.Toggle
 import info.cemu.cemu.common.ui.localization.tr
+import info.cemu.cemu.nativeinterface.NativeCustomTextures
 import info.cemu.cemu.nativeinterface.NativeGameTitles
 
 @Composable
