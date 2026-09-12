@@ -671,6 +671,14 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 		// Same inputs, pre-discriminator algorithm. Only used to build rename_map.csv so an existing
 		// pack can be migrated to the new names; nothing looks a texture up by this.
 		tex->replLegacyHash = LatteTextureReplace::HashGuestRaw(physImagePtr, (uint32)textureLoader.maxOffsetOutdated);
+		// Recorded here rather than from the dump block: building rename_map.csv needs nothing but
+		// the two hashes, so it must not depend on image writing working. Both hashes are the same
+		// for every mip of a surface, so emit an entry per level to cover whatever the pack ships.
+		if (LatteTextureReplace::IsRecordingRenameMap())
+		{
+			for (sint32 m = 0; m < std::max<sint32>(1, tex->mipLevels); m++)
+				LatteTextureReplace::RecordRenameMapping(tex->replLegacyHash, tex->replStrongHash, tex->width, tex->height, (uint32)format, m);
+		}
 	}
 
 	if (tex->isDataDefined == false && LatteTextureReplace::IsEnabled() && Latte::IsCompressedFormat(format))
@@ -806,8 +814,6 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 			if (texHashForDump == 0)
 				texHashForDump = LatteTextureReplace::HashGuest(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, tex->format);
 			path /= fmt::format("{:016x}_{:d}x{:d}_fmt{:04x}_mip{:02d}.tga", texHashForDump, tex->width, tex->height, (uint32)tex->format, mipIndex);
-			// Record what this texture used to be called so an existing pack can be renamed.
-			LatteTextureReplace::RecordRenameMapping(tex->replLegacyHash, texHashForDump, tex->width, tex->height, (uint32)tex->format, mipIndex);
 		}
 		else
 			path /= fmt::format("{:08x}_fmt{:04x}_slice{:d}_mip{:02d}_{:d}x{:d}_tm{:02d}.tga", physImagePtr, (uint32)tex->format, sliceIndex, mipIndex, tex->width, tex->height, tileMode);

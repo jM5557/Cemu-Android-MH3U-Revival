@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <atomic>
 #include <fstream>
 #include <vector>
 #include <string>
@@ -478,11 +479,16 @@ namespace LatteTextureReplace
 	//   <old filename>,<new filename>
 	// Play through the areas your pack covers, then run tools/migrate_texture_pack.py against it to
 	// rename the pack in place. Deduplicated in memory so a texture seen every frame is recorded once.
+	static std::atomic<bool> s_recordRenameMap{false};
 	static std::mutex s_renameMutex;
 	static std::set<std::pair<uint64_t,int>> s_renameSeen;
 
+	void SetRecordRenameMap(bool enabled){ s_recordRenameMap.store(enabled); }
+	bool IsRecordingRenameMap(){ return s_recordRenameMap.load(); }
+
 	void RecordRenameMapping(uint64_t legacyHash, uint64_t newHash, int width, int height, uint32_t gx2Format, int mipIndex)
 	{
+		if(!s_recordRenameMap.load()) return;
 		if(!legacyHash || !newHash || legacyHash == newHash) return;
 		std::scoped_lock lock(s_renameMutex);
 		if(!s_renameSeen.insert({legacyHash, mipIndex}).second) return;

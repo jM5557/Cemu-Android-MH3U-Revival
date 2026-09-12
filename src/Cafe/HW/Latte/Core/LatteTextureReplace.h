@@ -36,6 +36,8 @@ namespace LatteTextureReplace
 
 	// Appends one <old>,<new> filename pair to dump/textures/rename_map.csv. See the definition.
 	void RecordRenameMapping(uint64_t legacyHash, uint64_t newHash, int width, int height, uint32_t gx2Format, int mipIndex);
+	void SetRecordRenameMap(bool enabled);
+	bool IsRecordingRenameMap();
 
 	// Same slice, decoded to linear R8G8B8A8 and cached. Used when the graphics backend reports
 	// texture_isNativeCompressedFormat()==false for the replacement's format, which is the normal

@@ -116,6 +116,7 @@ fun CustomTexturesScreen(
         HorizontalDivider()
 
         TextureDumpToggle()
+        MigrationScanToggle()
 
         Button(
             label = tr("Reload textures now"),
@@ -187,4 +188,26 @@ private fun TextureDumpToggle() {
             modifier = Modifier.padding(horizontal = 8.dp),
         )
     }
+}
+
+/**
+ * Records dump/textures/rename_map.csv without writing images.
+ *
+ * Migrating a pack to the current hash scheme only needs each texture's old and new hash, both of
+ * which are computed during a normal texture load. Keeping this separate from image dumping means
+ * the migration works even if writing TGAs does not, and it is far faster and smaller.
+ */
+@Composable
+private fun MigrationScanToggle() {
+    var scanning by remember { mutableStateOf(NativeCustomTextures.isScanningForMigration()) }
+
+    Toggle(
+        label = tr("Scan for pack migration"),
+        description = tr("Records rename_map.csv so an older pack can be renamed to the current hash scheme. Writes no images. Play through the areas your pack covers, then turn it off."),
+        checked = scanning,
+        onCheckedChanged = {
+            scanning = it
+            NativeCustomTextures.setScanningForMigration(it)
+        },
+    )
 }

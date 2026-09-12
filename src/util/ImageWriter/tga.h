@@ -1,14 +1,23 @@
 #include "Common/FileStream.h"
 #include <vector>
+#include <fstream>
+#include <filesystem>
 
 static bool tga_write_rgba(const fs::path& path, sint32 width, sint32 height, uint8* pixelData)
 {
-	FileStream* fs = FileStream::createFile2(path);
-	if (fs == nullptr)
+	// Deliberately std::ofstream rather than FileStream. On Android FileStream routes through
+	// FileStreamAndroid, which carries the content-URI abstraction and its own descriptor
+	// handling; texture dumping writes one file per texture straight to a real path and does not
+	// need any of that. Using the stream directly removes a whole class of failure from a path
+	// that previously reported nothing when it broke.
+	std::error_code _ec;
+	fs::create_directories(path.parent_path(), _ec);
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	if (!out.is_open())
 		return false;
 
 	uint8_t header[18] = {0,0,2,0,0,0,0,0,0,0,0,0, (uint8)(width % 256), (uint8)(width / 256), (uint8)(height % 256), (uint8)(height / 256), 32, 0x20};
-	fs->writeData(&header, sizeof(header));
+	out.write((const char*)header, sizeof(header));
 
 	std::vector<uint8> tempPixelData;
 	tempPixelData.resize(width * height * 4);
@@ -28,7 +37,7 @@ static bool tga_write_rgba(const fs::path& path, sint32 width, sint32 height, ui
 			rowIn += 4;
 		}
 	}
-	fs->writeData(tempPixelData.data(), width * height * 4);
-	delete fs;
-	return true;
+	out.write((const char*)tempPixelData.data(), (std::streamsize)width * height * 4);
+	out.close();
+	return out.good() || !out.fail();
 }

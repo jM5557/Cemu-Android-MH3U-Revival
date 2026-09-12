@@ -144,3 +144,26 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getDumpFolder(JNIEnv* e
 {
 	return JNIUtils::ToJString(env, ActiveSettings::GetUserDataPath("dump/textures").string());
 }
+
+// Records dump/textures/rename_map.csv without writing any images. Migrating a pack to the current
+// hash scheme only needs the old and new hash of each texture, and both are computed during a
+// normal load, so this deliberately shares nothing with the image dump path.
+extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_isScanningForMigration([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return LatteTextureReplace::IsRecordingRenameMap() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_setScanningForMigration([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enabled)
+{
+	LatteTextureReplace::SetRecordRenameMap(enabled == JNI_TRUE);
+	if (enabled != JNI_TRUE)
+		return;
+	std::error_code ec;
+	std::filesystem::create_directories(ActiveSettings::GetUserDataPath("dump/textures"), ec);
+	// The hashes are computed per texture load, so the cache has to re-upload for anything already
+	// on screen to be recorded.
+	if (CafeSystem::IsTitleRunning())
+		LatteAsyncCommands_queueReloadTextures();
+}

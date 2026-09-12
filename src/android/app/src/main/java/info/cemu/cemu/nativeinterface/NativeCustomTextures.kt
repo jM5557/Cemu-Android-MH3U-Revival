@@ -45,4 +45,11 @@ object NativeCustomTextures {
 
     @JvmStatic
     external fun getDumpFolder(): String
+
+    /** Records rename_map.csv only. Independent of texture dumping. */
+    @JvmStatic
+    external fun isScanningForMigration(): Boolean
+
+    @JvmStatic
+    external fun setScanningForMigration(enabled: Boolean)
 }
