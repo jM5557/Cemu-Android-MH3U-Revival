@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/Core/LatteTextureReplace.h"
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
 #include "config/ActiveSettings.h"
+#include "Cemu/Logging/CemuLogging.h"
 #include "Cafe/CafeSystem.h"
 #include "JNIUtils.h"
 
@@ -126,7 +127,10 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_setDumpingTextures([[ma
 	//    appears. On desktop the wx app creates the user-data tree at startup; the Android port
 	//    does not.
 	std::error_code ec;
-	std::filesystem::create_directories(ActiveSettings::GetUserDataPath("dump/textures"), ec);
+	const auto dumpDir = ActiveSettings::GetUserDataPath("dump/textures");
+	std::filesystem::create_directories(dumpDir, ec);
+	cemuLog_log(LogType::Force, "[TextureDump] enabled, writing to {} (dir ok: {}, title running: {})",
+		dumpDir.string(), !ec || std::filesystem::exists(dumpDir), CafeSystem::IsTitleRunning());
 	// 2. The flag is sampled per texture *load*, and a texture already in the cache is never
 	//    reloaded. Without a flush, enabling mid-session dumps only textures the game happens to
 	//    upload afterwards, which in a static scene is none of them.

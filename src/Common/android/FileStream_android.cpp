@@ -181,15 +181,18 @@ FileStreamAndroid* FileStreamAndroid::createFile2(const fs::path& path)
 		throw std::runtime_error("write operation not supported");
 	}
 
+	// This used to call FileStreamUnix::createFile2 twice: the first result was null-checked and
+	// then dropped on the floor, leaking its descriptor, while a second open (which truncates
+	// again) supplied the handle actually returned. Anything that creates many files in a session
+	// -- texture dumping creates one per texture -- exhausts the process descriptor limit, after
+	// which every open fails silently.
 	auto fileStream = FileStreamUnix::createFile2(path);
 	if (fileStream == nullptr)
 	{
 		return nullptr;
 	}
 
-	IFileStream* adapter = new FileStreamAdapter(FileStreamUnix::createFile2(path));
-
-	return new FileStreamAndroid(adapter);
+	return new FileStreamAndroid(new FileStreamAdapter(fileStream));
 }
 
 std::optional<std::vector<uint8>> FileStreamAndroid::LoadIntoMemory(const fs::path& path)

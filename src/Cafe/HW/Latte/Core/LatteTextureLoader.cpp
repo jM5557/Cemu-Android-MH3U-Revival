@@ -811,7 +811,16 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 		}
 		else
 			path /= fmt::format("{:08x}_fmt{:04x}_slice{:d}_mip{:02d}_{:d}x{:d}_tm{:02d}.tga", physImagePtr, (uint32)tex->format, sliceIndex, mipIndex, tex->width, tex->height, tileMode);
-		tga_write_rgba(path, textureLoader.width, textureLoader.height, textureLoader.dumpRGBA);
+		if (!tga_write_rgba(path, textureLoader.width, textureLoader.height, textureLoader.dumpRGBA))
+		{
+			// Rate-limited: a failing dump fails for every texture, every frame.
+			static uint32 s_dumpFailures = 0;
+			if (s_dumpFailures < 5)
+			{
+				s_dumpFailures++;
+				cemuLog_log(LogType::Force, "[TextureDump] failed to write {}", path.string());
+			}
+		}
 		free(textureLoader.dumpRGBA);
 	}
 	// clean up
