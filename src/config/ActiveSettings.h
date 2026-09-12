@@ -124,6 +124,10 @@ public:
 	[[nodiscard]] static uint32 GetPersistentId();
 	[[nodiscard]] static bool IsOnlineEnabled();
 	[[nodiscard]] static bool HasRequiredOnlineFiles();
+	// Re-runs iosuCrypt_checkRequirementsForOnlineMode and updates the cached flag. The flag is
+	// normally only computed during Init, so anything that creates the online files at runtime
+	// (the Android gate-file generator) must call this or online mode stays off until restart.
+	static void RefreshOnlineFileStatus();
 	[[nodiscard]] static NetworkService GetNetworkService();
 	// dump options
 	[[nodiscard]] static bool DumpShadersEnabled();

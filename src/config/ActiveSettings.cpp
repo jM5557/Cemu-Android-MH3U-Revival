@@ -156,6 +156,12 @@ bool ActiveSettings::HasRequiredOnlineFiles()
 	return s_has_required_online_files;
 }
 
+void ActiveSettings::RefreshOnlineFileStatus()
+{
+	std::string additionalErrorInfo;
+	s_has_required_online_files = iosuCrypt_checkRequirementsForOnlineMode(additionalErrorInfo) == IOS_CRYPTO_ONLINE_REQ_OK;
+}
+
 NetworkService ActiveSettings::GetNetworkService()
 {
 	return GetConfig().GetAccountNetworkService(GetPersistentId());
