@@ -32,9 +32,20 @@ void NetworkConfig::Load(XMLConfigParser& parser)
 	urls.OLV = u.get("olv", NintendoURLs::OLVURL);
 }
 
+// File-scope rather than function-local so it can be invalidated. Anything that creates
+// network_services.xml at runtime (the Android dumpless-online setup) must call
+// InvalidateXMLExistsCache(), otherwise the "false" cached during startup sticks for the whole
+// session and selecting the Custom service silently reads back as Offline.
+static std::optional<bool> s_networkXmlExists;
+
+void NetworkConfig::InvalidateXMLExistsCache()
+{
+	s_networkXmlExists.reset();
+}
+
 bool NetworkConfig::XMLExists() 
 {
-	static std::optional<bool> s_exists; // caches result of fs::exists
+	auto& s_exists = s_networkXmlExists;
 	if(s_exists.has_value())
 		return *s_exists;
 	std::error_code ec;

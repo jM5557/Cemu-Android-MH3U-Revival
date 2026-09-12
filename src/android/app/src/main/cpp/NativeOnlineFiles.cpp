@@ -95,6 +95,38 @@ Java_info_cemu_cemu_nativeinterface_NativeOnlineFiles_generateGateFiles(JNIEnv* 
 		iosuCrypt_checkRequirementsForOnlineMode(reason);
 		return JNIUtils::ToJString(env, "files written but the check still fails: " + reason);
 	}
+
+	// CemuConfig::GetAccountNetworkService downgrades a stored "Custom" selection to Offline
+	// whenever network_services.xml is absent, so writing the account setting alone does nothing.
+	// Every URL defaults to the Nintendo endpoint when its key is missing, and MH3U never reaches
+	// any of them -- the revival patch intercepts ACT_GetNexToken_WithCache before a request is
+	// made -- so a minimal file is enough.
+	const fs::path networkXml = ActiveSettings::GetConfigPath("network_services.xml");
+	std::error_code ec;
+	if (!fs::exists(networkXml, ec))
+	{
+		fs::create_directories(networkXml.parent_path(), ec);
+		std::ofstream out(networkXml, std::ios::trunc);
+		if (!out.is_open())
+			return JNIUtils::ToJString(env, std::string("could not write network_services.xml"));
+		out << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+		out << "<content>\n";
+		out << "\t<networkname>MH3U Revival</networkname>\n";
+		out << "\t<disablesslverification>true</disablesslverification>\n";
+		out << "</content>\n";
+		out.close();
+		if (!out.good())
+			return JNIUtils::ToJString(env, std::string("could not write network_services.xml"));
+	}
+	// XMLExists() caches its answer, and startup already cached "missing".
+	NetworkConfig::InvalidateXMLExistsCache();
+	NetworkConfig::LoadOnce();
+
+	GetConfig().SetAccountSelectedService(ActiveSettings::GetPersistentId(), NetworkService::Custom);
+	GetConfigHandle().Save();
+
+	if (GetConfig().GetAccountNetworkService(ActiveSettings::GetPersistentId()) != NetworkService::Custom)
+		return JNIUtils::ToJString(env, std::string("network service did not stick; restart the app and try again"));
 	return JNIUtils::ToJString(env, std::string());
 }
 

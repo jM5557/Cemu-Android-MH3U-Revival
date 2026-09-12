@@ -125,13 +125,9 @@ private fun OnlineGateFilesRow() {
             if (working) return@Button
             working = true
             scope.launch {
-                val failure = withContext(Dispatchers.IO) {
-                    val reason = NativeOnlineFiles.generateGateFiles()
-                    if (reason.isEmpty()) {
-                        NativeOnlineFiles.setNetworkService(NativeOnlineFiles.SERVICE_CUSTOM)
-                    }
-                    reason
-                }
+                // generateGateFiles also writes network_services.xml and selects the Custom
+                // service; doing it separately here would skip the XML and read back as Offline.
+                val failure = withContext(Dispatchers.IO) { NativeOnlineFiles.generateGateFiles() }
                 error = failure.ifEmpty { null }
                 status = describeState()
                 working = false
@@ -144,5 +140,6 @@ private fun describeState(): String = when {
     NativeOnlineFiles.isOnlineEnabled() -> "Online mode: ready"
     NativeOnlineFiles.hasRequiredOnlineFiles() ->
         "Online mode: files present, but the account network service is Offline"
+    // (kept distinct so the two halves of IsOnlineEnabled stay diagnosable)
     else -> "Online mode: required files are missing"
 }

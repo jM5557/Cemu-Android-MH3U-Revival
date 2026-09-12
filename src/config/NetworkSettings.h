@@ -43,6 +43,7 @@ struct NetworkConfig
     void Save(XMLConfigParser& parser);
     
     static bool XMLExists();
+    static void InvalidateXMLExistsCache();
 };
 
 struct NintendoURLs {
