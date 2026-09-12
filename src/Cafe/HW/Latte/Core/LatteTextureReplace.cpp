@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <map>
+#include <set>
 #include <mutex>
 #include <fstream>
 #include <vector>
@@ -216,11 +217,30 @@ namespace LatteTextureReplace
 		return h;
 	}
 
+	// pixelCount and fmt were accepted and discarded, so the lookup key was pure byte content with
+	// nothing identifying the surface. Two textures whose bytes agreed over the hashed range mapped
+	// to the same pack entry regardless of dimensions or format, and the only downstream check
+	// (slice->width == hostW) passes whenever the collision partner happens to be the same size --
+	// which for armour and monster variants it usually is. Folding the discriminators in makes
+	// cross-dimension and cross-format collisions impossible rather than merely unlikely.
+	//
+	// HashData's XOR accumulation also leaves the combined value with no avalanche, so near-identical
+	// inputs produced near-identical hashes. A splitmix64 finalizer fixes that.
+	//
+	// NOTE: this changes every hash value, so pack filenames from before this commit no longer
+	// match. See RecordRenameMapping below for the migration path.
 	uint64_t HashGuest(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt){
 		if(!s_enabled) { std::scoped_lock lock(s_mutex); EnsureInit(); if(!s_enabled) return 0; }
 		const uint8* p=(const uint8*)memory_getPointerFromPhysicalOffset(physImagePtr);
 		if(!p||!sizeBytes) return 0;
-		return HashData(p, sizeBytes);
+		uint64_t h = HashData(p, sizeBytes);
+		h ^= (uint64_t)pixelCount        * 0x9E3779B97F4A7C15ULL;
+		h ^= ((uint64_t)(uint32_t)fmt + 0x165667B19E3779F9ULL) * 0xC2B2AE3D27D4EB4FULL;
+		h ^= (uint64_t)sizeBytes         * 0xD6E8FEB86659FD93ULL;
+		h ^= h >> 33; h *= 0xFF51AFD7ED558CCDULL;
+		h ^= h >> 33; h *= 0xC4CEB9FE1A85EC53ULL;
+		h ^= h >> 33;
+		return h ? h : 1; // 0 is the "no hash" sentinel elsewhere
 	}
 
 	uint64_t HashGuestRaw(uint32_t physImagePtr, uint32_t sizeBytes){
@@ -451,6 +471,30 @@ namespace LatteTextureReplace
 		ent.gx2Format = 0x01a | (src->gx2Format & 0x400u);
 		g.rgba8[mipIndex] = ent;
 		return &g.rgba8[mipIndex];
+	}
+
+	// Migration aid for the hash change above. While texture dumping is on, every texture whose
+	// legacy and current hashes differ appends one line to dump/textures/rename_map.csv:
+	//   <old filename>,<new filename>
+	// Play through the areas your pack covers, then run tools/migrate_texture_pack.py against it to
+	// rename the pack in place. Deduplicated in memory so a texture seen every frame is recorded once.
+	static std::mutex s_renameMutex;
+	static std::set<std::pair<uint64_t,int>> s_renameSeen;
+
+	void RecordRenameMapping(uint64_t legacyHash, uint64_t newHash, int width, int height, uint32_t gx2Format, int mipIndex)
+	{
+		if(!legacyHash || !newHash || legacyHash == newHash) return;
+		std::scoped_lock lock(s_renameMutex);
+		if(!s_renameSeen.insert({legacyHash, mipIndex}).second) return;
+		std::error_code ec;
+		fs::path dir = ActiveSettings::GetUserDataPath("dump/textures");
+		fs::create_directories(dir, ec);
+		std::ofstream out(dir / "rename_map.csv", std::ios::app);
+		if(!out.is_open()) return;
+		char oldName[128], newName[128];
+		snprintf(oldName, sizeof(oldName), "%016llx_%dx%d_fmt%04x_mip%02d", (unsigned long long)legacyHash, width, height, gx2Format, mipIndex);
+		snprintf(newName, sizeof(newName), "%016llx_%dx%d_fmt%04x_mip%02d", (unsigned long long)newHash,    width, height, gx2Format, mipIndex);
+		out << oldName << "," << newName << "\n";
 	}
 
 	void SetTitleSettings(uint64_t titleId, bool enabled, const std::vector<std::string>& packs){

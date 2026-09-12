@@ -597,20 +597,20 @@ void LatteTextureLoader_loadTextureDataIntoSlice(LatteTexture* hostTexture, sint
 				// the guest texture to R8G8B8A8, so the replacement has to be decoded to match --
 				// uploading raw blocks into an RGBA8 image renders garbage instead of failing.
 				const Latte::E_GX2SURFFMT replFormat = (Latte::E_GX2SURFFMT)slice->gx2Format;
-				if (Latte::IsCompressedFormat(replFormat) && !g_renderer->texture_isNativeCompressedFormat(replFormat))
+				const bool needsDecode = Latte::IsCompressedFormat(replFormat) && !g_renderer->texture_isNativeCompressedFormat(replFormat);
+				const LatteTextureReplace_Entry* upload = needsDecode
+					? LatteTextureReplace::GetSliceRGBA8(hostTexture->replStrongHash, mipIndex)
+					: slice;
+				if (upload)
 				{
-					const LatteTextureReplace_Entry* rgbaSlice = LatteTextureReplace::GetSliceRGBA8(hostTexture->replStrongHash, mipIndex);
-					if (rgbaSlice)
-					{
-						g_renderer->texture_loadSlice(hostTexture, hostW, hostH, depth, rgbaSlice->data, sliceIndex, mipIndex, rgbaSlice->dataSize);
-						return;
-					}
-				}
-				else
-				{
-					g_renderer->texture_loadSlice(hostTexture, hostW, hostH, depth, slice->data, sliceIndex, mipIndex, slice->dataSize);
+					g_renderer->texture_loadSlice(hostTexture, hostW, hostH, depth, upload->data, sliceIndex, mipIndex, upload->dataSize);
 					return;
 				}
+				// Decode failed, i.e. a format the DDS decoder does not handle. Render vanilla rather
+				// than falling through to the size-mismatch path, which would clear the slice to blank
+				// and burn the recreate budget on a mismatch that did not happen.
+				g_renderer->texture_loadSlice(hostTexture, width, height, depth, pixelData, sliceIndex, mipIndex, compressedImageSize);
+				return;
 			}
 			// replacement found but its size doesn't match the host -> stale overwrite on a reused
 			// texture object; flag it and let LatteTexture_RecheckReplacements() recreate it
@@ -666,7 +666,12 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 		(tex->overwriteInfo.hasResolutionOverwrite && !tex->replOverwriteIsOurs);
 	const bool _replUncompressed = LatteTextureReplace::IsReplaceableUncompressed(format) && !_replGpuOwned;
 	if (mipIndex == 0 && sliceIndex == 0 && LatteTextureReplace::IsEnabled() && (Latte::IsCompressedFormat(format) || _replUncompressed))
+	{
 		tex->replStrongHash = LatteTextureReplace::HashGuest(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format);
+		// Same inputs, pre-discriminator algorithm. Only used to build rename_map.csv so an existing
+		// pack can be migrated to the new names; nothing looks a texture up by this.
+		tex->replLegacyHash = LatteTextureReplace::HashGuestRaw(physImagePtr, (uint32)textureLoader.maxOffsetOutdated);
+	}
 
 	if (tex->isDataDefined == false && LatteTextureReplace::IsEnabled() && Latte::IsCompressedFormat(format))
 	{
@@ -799,8 +804,10 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 			// filename can be reused verbatim as the replacement filename
 			uint64 texHashForDump = tex->replStrongHash;
 			if (texHashForDump == 0)
-				texHashForDump = LatteTextureReplace::HashGuestRaw(physImagePtr, (uint32)textureLoader.maxOffsetOutdated);
+				texHashForDump = LatteTextureReplace::HashGuest(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, tex->format);
 			path /= fmt::format("{:016x}_{:d}x{:d}_fmt{:04x}_mip{:02d}.tga", texHashForDump, tex->width, tex->height, (uint32)tex->format, mipIndex);
+			// Record what this texture used to be called so an existing pack can be renamed.
+			LatteTextureReplace::RecordRenameMapping(tex->replLegacyHash, texHashForDump, tex->width, tex->height, (uint32)tex->format, mipIndex);
 		}
 		else
 			path /= fmt::format("{:08x}_fmt{:04x}_slice{:d}_mip{:02d}_{:d}x{:d}_tm{:02d}.tga", physImagePtr, (uint32)tex->format, sliceIndex, mipIndex, tex->width, tex->height, tileMode);
