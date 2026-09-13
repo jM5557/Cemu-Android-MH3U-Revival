@@ -7,6 +7,9 @@ namespace coreinit
 	OSHostAlarm* OSHostAlarmCreate(uint64 nextFire, uint64 period, void(*callbackFunc)(uint64 currentTick, void* context), void* context);
 	void OSHostAlarmDestroy(OSHostAlarm* hostAlarm);
 
+	// save states
+	void AlarmDoState(SaveStates::StateStream& s);
+
 	struct OSAlarm_t
 	{
 		/* +0x00 */ betype<uint32>  magic;

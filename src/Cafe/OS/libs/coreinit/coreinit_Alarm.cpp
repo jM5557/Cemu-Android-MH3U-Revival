@@ -5,6 +5,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 #include "Cafe/OS/RPL/rpl.h"
+#include "Cafe/SaveState/StateStream.h"
 
 // #define ALARM_LOGGING
 
@@ -303,6 +304,69 @@ namespace coreinit
         g_activeAlarms.clear();
         OSHostAlarm::Reset();
         __OSUnlockScheduler();
+	}
+
+	// Save states: host alarms.
+	//
+	// Guest OSAlarm_t objects live in guest memory and come back with the MEMR chunk,
+	// but the host-side OSHostAlarm objects that actually drive them do not. Those hold
+	// absolute fire ticks measured against the emulated timebase, and a state load
+	// rewinds that clock -- so every surviving host alarm suddenly looks scheduled far
+	// in the future and stops firing. Anything waiting on a timed event (OSSleepTicks,
+	// the AX frame alarm, vsync) then stalls or repeats a short sequence forever.
+	//
+	// There is a second, nastier reason this must run on load: the alarms created by
+	// OSSleepTicks() and OSWaitEventWithTimeout() capture a context pointer into the
+	// *calling fiber's stack*, and are only destroyed when those functions return
+	// normally. A state load destroys every host fiber, so leaving those alarms armed
+	// would fire a callback into freed memory. They are dropped here, before the thread
+	// rebuild frees the fibers.
+	void AlarmDoState(SaveStates::StateStream& s)
+	{
+		s.DoMarker(SaveStates::kMarkerALRM, "coreinit/alarm");
+
+		__OSLockScheduler();
+
+		std::vector<uint32> activeAlarmAddresses;
+		if (!s.IsReading())
+		{
+			activeAlarmAddresses.reserve(g_activeAlarms.size());
+			for (const auto& it : g_activeAlarms)
+				activeAlarmAddresses.emplace_back(memory_getVirtualOffsetFromPointer(it.first));
+		}
+		s.DoPODVector(activeAlarmAddresses);
+
+		if (s.IsReading() && !s.HasError())
+		{
+			// Tear down every host alarm, transient stack-context ones included. Reset()
+			// clears the firing set without deleting, which is deliberate: those alarms
+			// are owned by fiber frames that are about to disappear, so dropping them is
+			// the only safe option.
+			for (auto& it : g_activeAlarms)
+				OSHostAlarmDestroy(it.second);
+			g_activeAlarms.clear();
+			OSHostAlarm::Reset();
+
+			// Rebuild one host alarm per guest alarm that was active at save time. Every
+			// guest-visible alarm shares the same callback and a null context, so no host
+			// function pointer ever has to enter a state file.
+			for (uint32 alarmAddress : activeAlarmAddresses)
+			{
+				if (alarmAddress == MPTR_NULL)
+					continue;
+				OSAlarm_t* alarm = (OSAlarm_t*)memory_getPointerFromVirtualOffset(alarmAddress);
+				const uint64 nextTime = _swapEndianU64(alarm->nextTime);
+				const uint64 period = _swapEndianU64(alarm->period);
+				g_activeAlarms[alarm] = OSHostAlarmCreate(nextTime, period, __OSHostAlarmTriggered, nullptr);
+			}
+			// Reset() left the "soonest alarm" hint at zero, which would make the
+			// lock-free fast path claim a pending alarm on every single check.
+			OSHostAlarm::updateEarliestAlarmAtomic();
+		}
+
+		__OSUnlockScheduler();
+
+		s.DoMarker(SaveStates::kMarkerALRM, "coreinit/alarm-end");
 	}
 
 	void _OSAlarmThread(PPCInterpreter_t* hCPU)

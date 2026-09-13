@@ -214,6 +214,12 @@ uint64 PPCTimer_getRawTsc();
 
 void PPCTimer_start();
 
+namespace SaveStates
+{
+	class StateStream;
+}
+void PPCTimer_DoState(SaveStates::StateStream& s);
+
 // core info and control
 extern uint32 ppcThreadQuantum;
 

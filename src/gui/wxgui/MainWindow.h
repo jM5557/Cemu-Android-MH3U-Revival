@@ -99,6 +99,8 @@ public:
 	void OnLaunchFromFile(wxLaunchGameEvent& event);
 	void OnInstallUpdate(wxCommandEvent& event);
 	void OnFileExit(wxCommandEvent& event);
+	void OnSaveState(wxCommandEvent& event);
+	void OnLoadState(wxCommandEvent& event);
 	void OnNFCMenu(wxCommandEvent& event);
 	void OnOptionsInput(wxCommandEvent& event);
 	void OnAccountSelect(wxCommandEvent& event);

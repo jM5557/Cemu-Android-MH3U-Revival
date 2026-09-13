@@ -1,6 +1,7 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/OS/libs/gx2/GX2.h" // todo - remove dependency
 #include "Cafe/HW/Latte/Core/Latte.h"
+#include "Cafe/SaveState/StateStream.h"
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
@@ -20,6 +21,36 @@
 #include "Cafe/CafeSystem.h"
 
 LatteGPUState_t LatteGPUState = {};
+
+// Save states: Latte GPU state that lives on the host side.
+//
+// The flip handshake is split across the host/guest boundary. The guest's request and
+// execute counters live in the GX2 shared area (guest memory, restored by MEMR), but the
+// count of swaps the GPU has actually seen is a host atomic:
+//
+//     LatteCommandProcessor.cpp: LatteGPUState.flipRequestCount.fetch_add(1)  (GPU side)
+//     LatteTiming.cpp:           if (flipRequestCount > 0) { fetch_sub(1); guest execute++ }
+//
+// A state load rewinds the guest counters and empties the command ring, discarding any
+// swap command that was still in flight. If the host counter is not restored alongside
+// them, a guest that comes back with a pending flip waits for a swap that can never be
+// executed: the game keeps running but the picture never updates again.
+void Latte_DoState(SaveStates::StateStream& s)
+{
+	s.DoMarker(SaveStates::kMarkerLATT, "Latte/gpu-state");
+
+	uint64 flipRequestCount = LatteGPUState.flipRequestCount.load();
+	s.Do(flipRequestCount);
+	if (s.IsReading())
+		LatteGPUState.flipRequestCount.store(flipRequestCount);
+
+	// Frame/flip counters are only used for statistics and pacing heuristics, but keeping
+	// them consistent with the restored world costs nothing.
+	s.Do(LatteGPUState.frameCounter);
+	s.Do(LatteGPUState.flipCounter);
+
+	s.DoMarker(SaveStates::kMarkerLATT, "Latte/gpu-state-end");
+}
 
 std::atomic_bool sLatteThreadRunning = false;
 std::atomic_bool sLatteThreadFinishedInit = false;

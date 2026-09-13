@@ -532,6 +532,13 @@ add_library(CemuCafe
   OS/RPL/rpl_structs.h
   OS/RPL/rpl_symbol_storage.cpp
   OS/RPL/rpl_symbol_storage.h
+  SaveState/Quiesce.cpp
+  SaveState/Quiesce.h
+  SaveState/SaveState.cpp
+  SaveState/SaveState.h
+  SaveState/StateFile.h
+  SaveState/StateStream.cpp
+  SaveState/StateStream.h
   TitleList/GameInfo.cpp
   TitleList/GameInfo.h
   TitleList/ParsedMetaXml.h

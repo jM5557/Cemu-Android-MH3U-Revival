@@ -3,6 +3,8 @@
 #include "util/helpers/fspinlock.h"
 #include "util/highresolutiontimer/HighResolutionTimer.h"
 #include "Common/cpu_features.h"
+#include "Cafe/HW/Espresso/PPCState.h"
+#include "Cafe/SaveState/StateStream.h"
 
 #if defined(ARCH_X86_64)
 #include <immintrin.h>
@@ -192,4 +194,35 @@ static uint64 PPCTimer_updateLocked()
 	_tickSummary += elapsedTick;
 
 	return _tickSummary;
+}
+
+void PPCTimer_DoState(SaveStates::StateStream& s)
+{
+	s.DoMarker(SaveStates::kMarkerTIME, "PPCTimer");
+
+	// The emulated timebase is a virtual accumulator rather than a reading of the host
+	// clock, so freezing and restoring these counters resumes emulated time exactly
+	// where it stopped. The guest observes no discontinuity.
+	sTimerSpinlock.lock();
+
+	s.Do(_tickSummary);
+	s.Do(_rdtscAcc.low);
+	s.Do(_rdtscAcc.high);
+	s.Do(ppcCyclesSince2000);
+	s.Do(ppcCyclesSince2000TimerClock);
+	s.Do(ppcCyclesSince2000_UTC);
+	s.Do(ppcMainThreadDECCycleValue);
+	s.Do(ppcMainThreadDECCycleStart);
+
+	if (s.IsReading())
+	{
+		// _rdtscLastMeasure is a host TSC reading and is meaningless across a restore.
+		// Rebasing it to now makes the next delta start from zero, so the wall-clock time
+		// that elapsed while the state sat on disk is not credited to the guest.
+		_rdtscLastMeasure = PPCTimer_getRawTsc();
+	}
+
+	sTimerSpinlock.unlock();
+
+	s.DoMarker(SaveStates::kMarkerTIME, "PPCTimer-end");
 }

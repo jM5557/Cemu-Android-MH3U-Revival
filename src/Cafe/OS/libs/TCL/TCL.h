@@ -1,5 +1,7 @@
 #include "Cafe/OS/RPL/COSModule.h"
 
+namespace SaveStates { class StateStream; }
+
 namespace TCL
 {
 	enum class TCLTimestampId
@@ -21,6 +23,10 @@ namespace TCL
 	// called from Latte code
 	bool TCLGPUReadRBWord(uint32& cmdWord);
 	void TCLGPUNotifyNewRetirementTimestamp();
+
+	// save states
+	bool TCLGPUIsRingBufferEmpty();
+	void TCLDoState(SaveStates::StateStream& s);
 
 	COSModule* GetModule();
 }

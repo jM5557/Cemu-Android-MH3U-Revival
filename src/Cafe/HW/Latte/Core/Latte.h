@@ -173,6 +173,9 @@ void LatteRenderTarget_updateViewport();
 
 #define catchOpenGLError()
 
+namespace SaveStates { class StateStream; }
+void Latte_DoState(SaveStates::StateStream& s);
+
 // Latte emulation control
 void Latte_Start();
 void Latte_Stop();

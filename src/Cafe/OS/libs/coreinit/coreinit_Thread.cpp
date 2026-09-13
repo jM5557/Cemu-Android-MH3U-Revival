@@ -8,6 +8,8 @@
 #include "Cafe/HW/Espresso/Debugger/GDBStub.h"
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
+#include "Cafe/SaveState/Quiesce.h"
+#include "Cafe/SaveState/StateStream.h"
 
 #include "util/helpers/Semaphore.h"
 #include "util/helpers/ConcurrentQueue.h"
@@ -77,6 +79,15 @@ namespace coreinit
 
 	thread_local uint32 t_assignedCoreIndex;
 	thread_local Fiber* t_schedulerFiber;
+	// t_assignedCoreIndex defaults to 0 on every thread, so it cannot distinguish a
+	// scheduler host thread from an arbitrary host thread. Save states need that
+	// distinction to refuse a world-stop requested from a scheduler thread.
+	thread_local bool t_isSchedulerThread = false;
+
+	bool __OSIsCurrentThreadScheduler()
+	{
+		return t_isSchedulerThread;
+	}
 
 	struct OSHostThread
 	{
@@ -1297,6 +1308,14 @@ namespace coreinit
 		__OSUnlockScheduler();
 		while (true)
 		{
+			// Save state rendezvous. This is the safe point: the scheduler lock is not
+			// held, no PPC instance is current, and any thread that ran on this core had
+			// its context stored to guest memory by __OSStoreThread() before switching
+			// here. Parking before __OSCheckSystemEvents() matters -- that call runs
+			// alarm/AX/NFP updates which mutate guest memory.
+			if (SaveStates::IsQuiesceRequested()) [[unlikely]]
+				SaveStates::QuiesceParkCurrentCore();
+
 			if (!g_coreRunQueueThreadCount[coreIndex].isZero()) // avoid hammering the lock on the main core if there is no runable thread
 			{
 				__OSLockScheduler();
@@ -1362,7 +1381,12 @@ namespace coreinit
 
 		// find next thread to run
 		// for main thread we force switching to the idle loop since it calls __OSCheckSystemEvents()
-		if(isMainThread)
+		// During a save state quiesce every core is routed through the idle loop as well,
+		// because that is where the rendezvous barrier lives. Without this a busy core in
+		// multicore mode would hand off directly from thread fiber to thread fiber and
+		// never reach the barrier. This thread's context was already written to guest
+		// memory by __OSStoreThread() above, so parking from the idle loop is safe.
+		if(isMainThread || SaveStates::IsQuiesceRequested())
 			Fiber::Switch(*g_idleLoopFiber[t_assignedCoreIndex]);
 		else if (OSThread_t* nextThread = __OSGetNextRunableThread(coreIndex))
 		{
@@ -1438,6 +1462,7 @@ namespace coreinit
 	{
 		SetThreadName(fmt::format("OSSched[core={}]", (uintptr_t)_assignedCoreIndex).c_str());
 		t_assignedCoreIndex = (sint32)(uintptr_t)_assignedCoreIndex;
+		t_isSchedulerThread = true;
 
 		enableFlushDenormalsToZero();
 
@@ -1472,6 +1497,11 @@ namespace coreinit
 	std::vector<std::thread::native_handle_type>& OSGetSchedulerThreads()
 	{
 		return g_schedulerThreadHandles;
+	}
+
+	size_t OSGetSchedulerThreadCount()
+	{
+		return sSchedulerThreads.size();
 	}
 
 	// starts PPC core emulation
@@ -1525,6 +1555,100 @@ namespace coreinit
 			delete hostThread;
 		}
 		s_threadToFiber.clear();
+	}
+
+	bool OSIsSchedulerActive()
+	{
+		return sSchedulerActive;
+	}
+
+	/* save states */
+
+	void __OSQuiesceWakeCores()
+	{
+		// Mirrors the wake-up in OSSchedulerEnd(). A core blocked in
+		// g_coreRunQueueThreadCount[].waitUntilNonZero() has no runnable thread and would
+		// never reach the quiesce barrier on its own.
+		for (size_t i = 0; i < Espresso::CORE_COUNT; i++)
+			g_coreRunQueueThreadCount[i].increment();
+	}
+
+	void __OSQuiesceReleaseCores()
+	{
+		// Undo the artificial run queue counts taken by __OSQuiesceWakeCores()
+		for (size_t i = 0; i < Espresso::CORE_COUNT; i++)
+			g_coreRunQueueThreadCount[i].decrement();
+	}
+
+	// Serializes host-side scheduler residue only. Everything else about a guest thread,
+	// its full register context included, lives in its OSThread_t inside guest memory and
+	// is already covered by the MEMR chunk.
+	void ThreadDoState(SaveStates::StateStream& s)
+	{
+		s.DoMarker(SaveStates::kMarkerCPUS, "coreinit/scheduler");
+
+		uint8 multicoreMode = g_isMulticoreMode ? 1 : 0;
+		s.Do(multicoreMode);
+		if (s.IsReading() && ((multicoreMode != 0) != g_isMulticoreMode))
+		{
+			// Run queue shape differs between 1-core and 3-core mode, so a state cannot
+			// cross that boundary. The fingerprint check should already have caught this.
+			s.SetError("State was taken with a different CPU core count");
+			return;
+		}
+
+		// per-core quantum jitter RNG
+		for (auto& lcg : s_lehmer_lcg)
+			s.Do(lcg);
+
+		// The active thread registry is a HOST array of guest pointers, distinct from the
+		// guest-side g_activeThreadQueue, so the RAM snapshot does not cover it. It also
+		// drives the fiber rebuild on load, since __OSActivateThread() keeps it in 1:1
+		// correspondence with s_threadToFiber.
+		srwlock_activeThreadList.LockWrite();
+		sint32 count = activeThreadCount;
+		s.Do(count);
+		if (s.HasError() || count < 0 || count > (sint32)std::size(activeThread))
+		{
+			srwlock_activeThreadList.UnlockWrite();
+			if (!s.HasError())
+				s.SetError(fmt::format("Active thread count {} out of range", count));
+			return;
+		}
+		for (sint32 i = 0; i < count; i++)
+			s.Do(activeThread[i]);
+		if (s.IsReading())
+			activeThreadCount = count;
+		srwlock_activeThreadList.UnlockWrite();
+
+		s.DoMarker(SaveStates::kMarkerCPUS, "coreinit/scheduler-end");
+	}
+
+	// Rebuilds the host-side fiber for every active guest thread after a state load.
+	//
+	// Called with all scheduler cores parked in their idle fibers, so no thread fiber is
+	// executing. A freshly created host thread starts at __OSFiberThreadEntry, which
+	// begins by calling __OSLoadThread() -- precisely what a thread receiving its first
+	// timeslice does. A restored thread and a brand new one are therefore
+	// indistinguishable to the scheduler, which is what makes this rebuild sound.
+	void __OSRebuildHostThreadsAfterStateLoad()
+	{
+		__OSLockScheduler();
+		// Drop every existing fiber. None is running (all cores are parked in
+		// g_idleLoopFiber) and their host stacks describe a world that no longer exists.
+		for (auto& it : s_threadToFiber)
+			delete it.second;
+		s_threadToFiber.clear();
+
+		srwlock_activeThreadList.LockWrite();
+		const sint32 count = activeThreadCount;
+		for (sint32 i = 0; i < count; i++)
+		{
+			OSThread_t* thread = (OSThread_t*)memory_getPointerFromVirtualOffset(activeThread[i]);
+			__OSCreateHostThread(thread);
+		}
+		srwlock_activeThreadList.UnlockWrite();
+		__OSUnlockScheduler();
 	}
 
 	SysAllocator<OSThread_t, PPC_CORE_COUNT> s_defaultThreads;

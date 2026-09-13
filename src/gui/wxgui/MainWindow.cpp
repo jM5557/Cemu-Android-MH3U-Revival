@@ -38,6 +38,7 @@
 #include "wxgui/EmulatedUSBDevices/EmulatedUSBDeviceFrame.h"
 
 #include "Cafe/CafeSystem.h"
+#include "Cafe/SaveState/SaveState.h"
 
 #include "util/helpers/SystemException.h"
 #include "wxgui/DownloadGraphicPacksWindow.h"
@@ -91,6 +92,8 @@ enum
 	MAINFRAME_MENU_ID_FILE_CLEAR_SPOTPASS_CACHE,
 	MAINFRAME_MENU_ID_FILE_EXIT,
 	MAINFRAME_MENU_ID_FILE_END_EMULATION,
+	MAINFRAME_MENU_ID_FILE_SAVE_STATE,
+	MAINFRAME_MENU_ID_FILE_LOAD_STATE,
 	MAINFRAME_MENU_ID_FILE_RECENT_0,
 	MAINFRAME_MENU_ID_FILE_RECENT_LAST = MAINFRAME_MENU_ID_FILE_RECENT_0 + 15,
 	// options
@@ -191,6 +194,8 @@ EVT_MENU(MAINFRAME_MENU_ID_FILE_OPEN_SHADERCACHE_FOLDER, MainWindow::OnOpenFolde
 EVT_MENU(MAINFRAME_MENU_ID_FILE_CLEAR_SPOTPASS_CACHE, MainWindow::OnClearSpotPassCache)
 EVT_MENU(MAINFRAME_MENU_ID_FILE_EXIT, MainWindow::OnFileExit)
 EVT_MENU(MAINFRAME_MENU_ID_FILE_END_EMULATION, MainWindow::OnFileMenu)
+EVT_MENU(MAINFRAME_MENU_ID_FILE_SAVE_STATE, MainWindow::OnSaveState)
+EVT_MENU(MAINFRAME_MENU_ID_FILE_LOAD_STATE, MainWindow::OnLoadState)
 EVT_MENU_RANGE(MAINFRAME_MENU_ID_FILE_RECENT_0 + 0, MAINFRAME_MENU_ID_FILE_RECENT_LAST, MainWindow::OnFileMenu)
 // options -> region menu
 EVT_MENU_RANGE(MAINFRAME_MENU_ID_OPTIONS_ACCOUNT_1, MAINFRAME_MENU_ID_OPTIONS_ACCOUNT_12, MainWindow::OnAccountSelect)
@@ -803,6 +808,30 @@ void MainWindow::OnNFCMenu(wxCommandEvent& event)
 void MainWindow::OnFileExit(wxCommandEvent& event)
 {
 	Close();
+}
+
+static fs::path GetSaveStateSlotPath()
+{
+	// Phase 0 is a single fixed slot. Slots, hotkeys and a browser come with the UX phase.
+	return ActiveSettings::GetUserDataPath("savestates/{:016x}/slot0.cst", (uint64)CafeSystem::GetForegroundTitleId());
+}
+
+// Both handlers run on the wx GUI thread, which is what the quiesce protocol requires
+// (a scheduler thread would wait for itself to park). The capture is synchronous, so the
+// UI is unresponsive for the duration -- bounded by the quiesce timeout plus the memory
+// copy. Moving this to a worker thread is a UX-phase item.
+void MainWindow::OnSaveState(wxCommandEvent& event)
+{
+	const SaveStates::OperationResult result = SaveStates::SaveToFile(GetSaveStateSlotPath());
+	if (!result.success)
+		wxMessageBox(wxString::FromUTF8(result.message), _("Save state failed"), wxOK | wxICON_ERROR, this);
+}
+
+void MainWindow::OnLoadState(wxCommandEvent& event)
+{
+	const SaveStates::OperationResult result = SaveStates::LoadFromFile(GetSaveStateSlotPath());
+	if (!result.success)
+		wxMessageBox(wxString::FromUTF8(result.message), _("Load state failed"), wxOK | wxICON_ERROR, this);
 }
 
 void MainWindow::TogglePadView()
@@ -2190,6 +2219,11 @@ void MainWindow::RecreateMenu()
 	}
 	else
 	{
+		// save states are only meaningful while a title is running. Phase 0 supports a
+		// single slot and load-into-running-title only.
+		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_SAVE_STATE, _("Save state"));
+		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_LOAD_STATE, _("Load state"));
+		m_fileMenu->AppendSeparator();
 #ifdef CEMU_DEBUG_ASSERT
 		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_END_EMULATION, _("Close game"));
 		m_fileMenuSeparator1 = m_fileMenu->AppendSeparator();
