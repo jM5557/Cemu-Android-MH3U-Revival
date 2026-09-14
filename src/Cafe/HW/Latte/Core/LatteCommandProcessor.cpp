@@ -14,6 +14,7 @@
 
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
 #include "Cafe/OS/libs/TCL/TCL.h" // TCL currently handles the GPU command ringbuffer
+#include "Cafe/SaveState/Quiesce.h"
 
 #include "Cafe/CafeSystem.h"
 
@@ -162,6 +163,18 @@ uint32 LatteCP_readU32Deprc()
 			return cmdWord;
 		if (Latte_GetStopSignal())
 			LatteThread_Exit();
+
+		// Save states: the one point in the command processor where the GPU is provably
+		// between packets. The ring came up empty on two consecutive reads, and the ring
+		// only ever holds whole packets (TCLWriteCmd publishes its write index after
+		// writing every word), so nothing is half-consumed. Indirect buffers are read out
+		// of guest memory rather than the ring, so m_queuePosStack is necessarily empty
+		// here too -- this function is only ever called from the top-level ring loop.
+		//
+		// That makes it both the safe point to park at for a capture, and the safe point
+		// at which to drop host GPU caches after a load.
+		if (SaveStates::IsGpuStateWorkPending())
+			SaveStates::GpuHandleStateWork();
 
 		// still no command data available, do some other tasks
 		LatteTiming_HandleTimedVsync();

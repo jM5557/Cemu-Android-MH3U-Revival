@@ -627,6 +627,7 @@ namespace coreinit
 	void __OSQuiesceReleaseCores();
 	void ThreadDoState(SaveStates::StateStream& s);
 	void __OSRebuildHostThreadsAfterStateLoad();
+	void __OSRebuildRunQueueCountsAfterStateLoad();
 
 	// internal
 	void __OSAddReadyThreadToRunQueue(OSThread_t* thread);

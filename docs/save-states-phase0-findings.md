@@ -10,9 +10,16 @@ Companion documents: `save-states-design.md` (the plan), `save-states-survey.md`
 
 ## 1. Status in one line
 
-**Save and restore of the entire CPU-side world works in real gameplay. The GPU does not
-come back — after a load the emulator runs but the display stays frozen on the last
-pre-load frame.**
+**Guest memory, timers, alarms and the scheduler's guest structures all save and restore
+correctly. The world still does not resume, and the reason is now identified and verified:
+Cemu's HLE gives every blocked guest thread a *host C++ continuation* on its fiber stack,
+and that continuation is not in guest memory. See §6 — it invalidates a core assumption of
+the design.**
+
+> Superseded: earlier revisions of this document said the emulator "runs but the display is
+> frozen", and treated the GPU as the open problem. That was wrong. The emulator was not
+> running at all; Cemu's FPS readout is driven by host vsync and keeps reporting 60 with the
+> guest completely stopped. §4 has the measurement that settles it.
 
 ---
 
@@ -61,16 +68,42 @@ threads are executing village code.
 
 ---
 
-## 4. The open problem
+## 4. What is actually happening after a load
 
-After a load: **emulator alive, FPS counter reads 60, audio is the restored world's audio,
-display frozen on the last frame rendered before the load.**
+**The guest is completely stopped.** Not rendering-stalled — stopped.
 
-Measured rigorously — three screenshots seconds apart, cropped to the game viewport
-(excluding the title bar, whose FPS text changes constantly) are pixel-identical.
+Two independent measurements, both against the live process via pymem:
 
-> Methodology note: an earlier full-window diff appeared to show live frames and led to a
-> wrong conclusion. Always crop to the viewport when testing this.
+**Game logic is not advancing.** Walking the documented `sPlayer` chain
+(`[0x10314b80] → +0x40+slot*4 → obj`) reads a coherent player — HP 100/100, stamina
+600/600 — so guest memory restored correctly. But every field sampled over several seconds
+is byte-identical.
+
+**No guest thread is runnable.** Scanning guest memory for the `OSThread_t` magic `tHrD`
+(`+0x320`) and decoding every hit:
+
+```
+READY=0  RUNNING=0  WAITING=27   (+5 NONE/MORIBUND)
+threads whose scheduler fields changed over 2s: 0
+currentRunQueue[0..2] == null for every thread
+```
+
+Every guest thread is parked on a wait queue and nothing is on any run queue.
+
+> **Why this looked like a GPU problem for three rounds of GPU fixes.** Cemu's FPS readout
+> is driven by host vsync, so it reports a steady 60.00 with the guest entirely stopped.
+> The audio backend keeps looping its last buffer. Nothing crashes. Every signal that is
+> cheap to read says "alive, stuck on a frame".
+>
+> The earlier "village music plays after loading from the woods" result was real evidence
+> that *memory* restored — but it was not evidence that anything was *executing*, and it
+> was read as though it were.
+>
+> Methodology that actually discriminates, in increasing order of authority: viewport-cropped
+> screenshot diffs (never full-window — the title bar's FPS text always changes), then a game
+> field known to tick, then the scheduler's own structures. Only the last one is conclusive.
+> Pick a liveness probe that is *validated to change during normal play* — the hunger timer
+> used first does not tick in the village, so its being static proved nothing.
 
 ---
 
@@ -122,7 +155,128 @@ so the guest returns expecting a flip the GPU will never see.
 
 ---
 
-## 6. Leading hypothesis for the freeze (NOT yet verified)
+## 6. Root cause: HLE blocked threads have host continuations
+
+**This is the blocker, and it is architectural rather than a missing chunk.**
+
+Cemu runs each guest thread on its own host fiber. When guest code calls an HLE function
+that blocks, the *host C++ call stack* parks on that fiber:
+
+```
+guest code
+  -> OSWaitEvent()                          [host C++]
+     -> OSThreadQueueInternal::queueAndWait [host C++]   coreinit_ThreadQueue.cpp:10
+        thread->state = STATE_WAITING;
+        PPCCore_switchToSchedulerWithLock();   <-- fiber parks HERE
+        cemu_assert_debug(state == RUNNING);   <-- resumes HERE when woken
+```
+
+Waking the thread means `Fiber::Switch` back into that stack, which returns up through
+`queueAndWait` → `OSWaitEvent` → the HLE dispatcher → guest code. **None of that host stack
+is in guest memory.**
+
+`__OSRebuildHostThreadsAfterStateLoad()` deletes every fiber and creates fresh ones starting
+at `__OSFiberThreadEntry`, which does `__OSLoadThread()` and then immediately begins
+executing guest instructions at the restored PC. It has no way to resume a parked C++ frame.
+
+So the rebuild is sound *only* for a thread descheduled at a guest instruction boundary —
+one that was preempted mid-timeslice. It is unsound for any thread blocked inside an HLE
+call. And §4 measured the split in a real game: **27 of 27 live threads were blocked inside
+HLE calls; zero were resumable.** That is not an unlucky sample — waiting on events, mutexes,
+message queues and vsync is what guest threads spend their lives doing.
+
+This invalidates the design's central claim (`Quiesce.h`, and §5.1 of the design doc): that
+parking cores after `__OSStoreThread()` puts "every guest CPU context inside the RAM snapshot
+for free". The *guest* context is captured. The *host* continuation is not, and in Cemu's HLE
+model a blocked thread has both.
+
+### 6.1 Why the earlier fixes could not have worked
+All three host/guest splits in §5 were real and correctly fixed, and none could have restored
+the world, because no guest thread could resume regardless. The same applies to the two fixes
+added after them:
+
+- **GPU thread parked in the quiesce** (`Quiesce.cpp`, `LatteCommandProcessor.cpp`) — worth
+  keeping on its own merits: previously the Latte thread read guest memory while `MEMR`
+  rewrote 286 MiB underneath it.
+- **GPU cache drop on load** (`Latte_DropCachesForStateLoad`) — verified to work: the stale
+  pre-load frame is now correctly discarded (display goes black instead of holding a ghost
+  frame). It also exposed and fixed a genuine upstream use-after-free
+  (`LatteMRT::NotifyTextureDeletion` never cleared the depth attachment).
+- **Run queue count rebuild** (`__OSRebuildRunQueueCountsAfterStateLoad`) — correct and worth
+  keeping (the host `CounterSemaphore` array does mirror guest run queues and was not
+  restored), but it changes nothing here: with every thread WAITING the correct count *is*
+  zero, and the cores are right to sleep.
+
+### 6.1b Measured: the HLE entry context is already in the snapshot
+
+Taken against a live title, for all 29 waiting threads:
+
+```
+srr0 (host-endian! see below) lands in 0x00e00e44 .. 0x00e0ba04 for every thread
+12 distinct values across 29 threads -- they cluster by which HLE function each is in
+lr holds real guest return addresses (0x02xxxxxx = main module)
+
+instruction word at those addresses:
+  0x00e00e44: 04000178   primary_op=1  hleFuncId=0x0178
+  0x00e0117c: 0400002b   primary_op=1  hleFuncId=0x002b
+  0x00e01190: 04000151   primary_op=1  hleFuncId=0x0151
+  0x00e0b460: 0400047f   primary_op=1  hleFuncId=0x047f
+```
+
+Primary opcode 1 is Cemu's reserved HLE opcode (`PPCInterpreterImpl.cpp:464` →
+`PPCInterpreter_virtualHLE`), and the low 16 bits index `s_ppcHleTable`.
+
+**So a blocked thread's saved guest context already records which HLE function it is inside
+(`srr0`), with what arguments (GPRs), and where to return (`LR`) — and all of it is in guest
+memory, already covered by `MEMR`, for free.** No dispatcher instrumentation is needed to
+capture an entry context; it is the saved context.
+
+This makes the *mechanism* of Path A small. On load, for each `STATE_WAITING` thread: unlink
+it from `currentWaitQueue`, set `STATE_READY`, add to the run queue, and leave the context
+untouched. A fresh fiber then starts executing at `srr0`, hits the HLE opcode, and re-invokes
+the original call with the original arguments against restored guest memory — returning
+immediately if the wait is already satisfied, or blocking again correctly if not. The unlink
+is what stops the re-entry from double-queueing the thread.
+
+> Gotcha for anyone reading `OSContext_t`: `srr0` is stored **host-endian**
+> (`coreinit_Thread.cpp:1140` assigns `hCPU->instructionPointer` with no `_swapEndianU32`,
+> and the field is a plain `uint32`, not a `betype`). Every neighbouring field is big-endian.
+> Read it as BE and you get nonsense like `0x7048e000` instead of `0x00e04870`.
+
+### 6.2 Options, honestly
+- **Restart the HLE call (recommended).** Per §6.1b the mechanism is small — unlink the
+  thread from its wait queue, mark it READY, let it re-enter the HLE call its context already
+  points at. Portable, survives cross-session, upstreamable. The *cost is not the mechanism,
+  it is the audit*: a call that only waits on a guest primitive (`OSWaitEvent`, `OSLockMutex`,
+  `OSReceiveMessage`, `GX2WaitForVsync`) restarts cleanly, but one that already handed work to
+  a host subsystem before blocking must not be re-entered — restarting an `IOS_Ioctl` would
+  re-submit the IPC request. Every blocking export needs classifying, and the unsafe ones need
+  either draining before capture or their own restore logic. That is the same FSAS/IOSU
+  problem the design doc deferred to phase 1, now with a concrete reason it cannot be skipped.
+  A cheap first experiment exists: implement the unlink-and-restart for all waiting threads and
+  observe how far a title gets before something re-entrant breaks.
+- **Snapshot the host fiber stacks.** The fallback, and in-session only. Requires
+  replacing Win32 `CreateFiber` (opaque, OS-owned stack) with a fiber whose stack Cemu
+  allocates — `FiberUnix.cpp` is already closer to this — then saving `[SP, stackBase)` plus
+  the switch context per thread. Sound only while host code addresses and referenced host
+  objects are unchanged, i.e. same process, no cross-session load. Host objects reachable
+  from those stacks (notably `OSHostAlarm`) must then be *restored as the same objects*
+  rather than recreated, which conflicts with the current `ALRM` approach.
+- **Make HLE blocking points re-enterable**, so a blocked thread's whole state lives in guest
+  memory. Correct and portable; a very large refactor across coreinit/GX2.
+- **Restrict when a state may be taken** to moments with no thread blocked in HLE. Measured:
+  that never happens.
+
+Nothing here is fixable by adding another chunk to the state file.
+
+---
+
+## 6b. Superseded hypothesis (kept for the record)
+
+*Both steps below were implemented and neither restored the world — §6 explains why. The
+rationale is kept because the reasoning was sound given what was measurable at the time, and
+because it shows how a plausible story survived three rounds of evidence that never actually
+tested it.*
 
 The Latte thread is a separate host thread that **is never stopped** by the quiesce and owns
 a large amount of *derived* state:
@@ -164,9 +318,14 @@ python menucmd.py 20109   # load state
 State lands at `<cemu user dir>/savestates/<titleId>/slot0.cst`.
 Success/failure is logged (`Save state: captured N MiB` / `restored N MiB`).
 
-Test that actually discriminates: save in Moga Village, walk to Moga Woods (an area
-transition, not just a few steps), load, and check whether the *picture* returns — not just
-the audio.
+**Do not judge a load by the picture, the FPS readout or the audio** — all three lie (§4).
+Judge it with the thread scan: if `READY == 0 && RUNNING == 0` after a load, the guest is
+stopped no matter what the window shows. The probe scans guest memory for `tHrD` at
+`OSThread_t+0x320` and decodes `state/attr/id/suspendCounter/currentRunQueue/currentWaitQueue`
+from the field layout in `coreinit_Thread.h:424`.
+
+Note for anyone rebuilding that probe: the pymem backend's `read_region()` is indexed from
+guest `0x02000000`, not `0`, so magic hits need that added before use as guest addresses.
 
 ---
 

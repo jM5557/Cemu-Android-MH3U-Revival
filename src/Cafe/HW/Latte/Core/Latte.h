@@ -175,6 +175,8 @@ void LatteRenderTarget_updateViewport();
 
 namespace SaveStates { class StateStream; }
 void Latte_DoState(SaveStates::StateStream& s);
+// Drops the guest-address-keyed GPU caches after a state load. Latte thread only.
+void Latte_DropCachesForStateLoad();
 
 // Latte emulation control
 void Latte_Start();

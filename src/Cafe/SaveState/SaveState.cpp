@@ -321,11 +321,21 @@ namespace SaveStates
 
 			// Host residue that is rebuilt rather than serialized.
 			coreinit::__OSRebuildHostThreadsAfterStateLoad();
+			// Must happen before the scope releases the cores: they consult these counters
+			// the moment they leave the barrier, and a stale count means they go straight
+			// back to sleep with a full run queue.
+			coreinit::__OSRebuildRunQueueCountsAfterStateLoad();
 
 			// Translated code may no longer match the restored guest memory. Dropping the
 			// whole cache costs a few seconds of re-JIT and carries no correctness risk,
 			// which is the same policy Dolphin applies to its JIT cache.
 			PPCRecompiler_invalidateRange(0, 0xFFFFFFFF);
+
+			// Same argument on the GPU side: the texture, buffer and index caches are keyed
+			// by guest address, and every one of those addresses just changed underneath
+			// them. The drop is performed by the parked GPU thread and completes before
+			// this scope releases the cores, so no drawcall ever sees a stale cache.
+			RequestGpuCacheDropOnRelease();
 		}
 
 		cemuLog_log(LogType::Force, "Save state: restored {} MiB of guest state, rebuilt host threads",

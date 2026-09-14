@@ -97,6 +97,15 @@ void LatteMRT::NotifyTextureDeletion(LatteTexture* texture)
 			sLatteCurrentRendertargets.colorBuffer[i].view = nullptr;
 		}
 	}
+	// The depth attachment was not being cleared here, so deleting a texture while it was
+	// bound as the depth target left this pointing at a freed view. Unobservable when the
+	// only caller was the shutdown path, but not once caches can be dropped mid-session --
+	// which is what a save state load does.
+	if (sLatteCurrentRendertargets.depthBuffer.view && sLatteCurrentRendertargets.depthBuffer.view->baseTexture == texture)
+	{
+		sLatteCurrentRendertargets.depthBuffer.view = nullptr;
+		sLatteCurrentRendertargets.depthBuffer.hasStencil = false;
+	}
 }
 
 LatteCachedFBO* LatteMRT::CreateCachedFBO(uint64 key)

@@ -10,8 +10,10 @@
 #include "WindowSystem.h"
 
 #include "Cafe/HW/Latte/Core/LatteBufferCache.h"
+#include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
+#include "Cafe/HW/Latte/Core/LatteIndices.h" // must follow Renderer.h (uses Renderer::INDEX_TYPE)
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "util/helpers/helpers.h"
 
@@ -50,6 +52,42 @@ void Latte_DoState(SaveStates::StateStream& s)
 	s.Do(LatteGPUState.flipCounter);
 
 	s.DoMarker(SaveStates::kMarkerLATT, "Latte/gpu-state-end");
+}
+
+// Save states: drop the host GPU caches that a state load invalidates.
+//
+// The texture cache, the buffer cache and the index cache are all keyed by *guest address*.
+// That key is only meaningful while the contents of those addresses evolve the way the GPU
+// observed them evolving. A state load replaces every one of those addresses at once, with
+// data from a different point in time, so every cached entry becomes a host-side copy of
+// something that was never there -- and the caches cannot notice, because their
+// invalidation is driven by guest writes they did not see happen.
+//
+// Compiled shaders and pipelines are deliberately kept. They are keyed by the hash of the
+// shader program rather than by an address, so a state load cannot invalidate them, and
+// rebuilding them is precisely what makes a cold boot stutter.
+//
+// Called only from the Latte thread (see SaveStates::GpuHandleStateWork), at a command
+// packet boundary, with guest memory already restored.
+void Latte_DropCachesForStateLoad()
+{
+	// Detach the current render targets before deleting anything. Deleting a texture tears
+	// down the cached FBOs that reference it, and leaving a binding that points at a view
+	// about to be freed is how a cache drop turns into a use-after-free on the next draw.
+	for (uint32 i = 0; i < Latte::GPU_LIMITS::NUM_COLOR_ATTACHMENTS; i++)
+		LatteMRT::SetColorAttachment(i, nullptr);
+	LatteMRT::SetDepthAndStencilAttachment(nullptr, false);
+
+	LatteTC_UnloadAllTextures();  // also drops every cached FBO and the empty FBO
+	LatteBufferCache_UnloadAll(); // vertex/uniform/attribute data staged out of guest RAM
+	LatteIndices_invalidateAll(); // converted index buffers, keyed by guest address
+
+	// Make the next drawcall re-resolve its textures and render targets from the restored
+	// guest registers instead of trusting anything carried over from before the load.
+	LatteGPUState.repeatTextureInitialization = true;
+	LatteGPUState.activeShaderHasError = false;
+
+	cemuLog_log(LogType::Force, "Save state: GPU caches dropped");
 }
 
 std::atomic_bool sLatteThreadRunning = false;

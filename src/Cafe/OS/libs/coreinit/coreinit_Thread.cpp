@@ -1580,6 +1580,52 @@ namespace coreinit
 			g_coreRunQueueThreadCount[i].decrement();
 	}
 
+	// Rebuilds the host-side mirror of the guest run queues after a state load.
+	//
+	// __OSAddReadyThreadToRunQueue()/__OSRemoveThreadFromRunQueues() keep
+	// g_coreRunQueueThreadCount[] in lockstep with the guest queue each thread is linked
+	// into. Those links live in guest memory and are restored by MEMR; the counters are
+	// host state and are not. A load therefore leaves the two describing different worlds,
+	// and once the counter reaches zero the cores block in waitUntilNonZero() even though
+	// the restored run queues are full of runnable threads. No guest code executes again.
+	//
+	// That failure is easy to misread. Nothing crashes, host-driven vsync keeps Cemu's FPS
+	// readout at 60, and the audio backend keeps looping its last buffer, so the emulator
+	// looks alive and merely stuck on a frame -- which is precisely how this presented as a
+	// GPU problem for three rounds of GPU fixes.
+	//
+	// Recomputed from the restored guest queues rather than serialized: the queue is the
+	// structure the counter exists to describe, so a derived value cannot drift from it.
+	void __OSRebuildRunQueueCountsAfterStateLoad()
+	{
+		__OSLockScheduler();
+		for (uint32 coreIndex = 0; coreIndex < Espresso::CORE_COUNT; coreIndex++)
+		{
+			sint32 runnable = 0;
+			OSThread_t* threadItr = g_coreRunQueue.GetPtr()[coreIndex].head.GetPtr();
+			while (threadItr)
+			{
+				runnable++;
+				if (runnable > (sint32)std::size(activeThread))
+				{
+					// A cycle here would mean the restored queue itself is corrupt, which is
+					// a bug in MEMR rather than something to spin on.
+					cemuLog_log(LogType::Force, "Save state: run queue for core {} is corrupt, stopped counting at {}", coreIndex, runnable);
+					break;
+				}
+				threadItr = threadItr->linkRun[coreIndex].next.GetPtr();
+			}
+
+			g_coreRunQueueThreadCount[coreIndex].reset();
+			// The extra token is the one __OSQuiesceWakeCores() took to pull this core out of
+			// waitUntilNonZero(). __OSQuiesceReleaseCores() hands it back when the state
+			// operation finishes, which leaves exactly `runnable`.
+			for (sint32 i = 0; i < runnable + 1; i++)
+				g_coreRunQueueThreadCount[coreIndex].increment();
+		}
+		__OSUnlockScheduler();
+	}
+
 	// Serializes host-side scheduler residue only. Everything else about a guest thread,
 	// its full register context included, lives in its OSThread_t inside guest memory and
 	// is already covered by the MEMR chunk.

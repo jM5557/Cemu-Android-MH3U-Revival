@@ -25,6 +25,35 @@ namespace SaveStates
 	// stored to guest memory).
 	void QuiesceParkCurrentCore();
 
+	// --- GPU (Latte) thread participation ---
+	//
+	// Parking the PPC cores stops the guest, but the Latte thread is a separate host
+	// thread that keeps running, and it owns a large amount of state *derived* from guest
+	// memory: the texture cache and buffer cache are keyed by guest address, the render
+	// target database points into them, and the command processor holds a parse position.
+	// Replacing all of guest memory underneath that leaves it describing a world that no
+	// longer exists.
+	//
+	// So the GPU thread is a participant in the world-stop rather than a bystander: it
+	// parks at a command-packet boundary, and it is the thread that performs the post-load
+	// cache drop. Renderer resources belong to the thread that created them, so dropping
+	// them from the GUI thread would race the backend's deferred-destruction queues.
+
+	// Cheap check for the command processor's idle path. False in the overwhelmingly
+	// common case, so the hook costs one relaxed load per idle iteration.
+	bool IsGpuStateWorkPending();
+
+	// Called by the Latte thread from its command-processor idle path. Parks if a quiesce
+	// is in progress, then performs any pending cache drop before returning. Safe to call
+	// when there is nothing to do.
+	void GpuHandleStateWork();
+
+	// Ask the GPU thread to drop its guest-address-keyed caches. Call this while a
+	// QuiesceScope is held, after guest memory has been restored. The drop is carried out
+	// by the parked GPU thread and completes before the scope releases the PPC cores, so
+	// no guest drawcall can be submitted against a stale cache.
+	void RequestGpuCacheDropOnRelease();
+
 	enum class QuiesceStatus
 	{
 		Success,
@@ -60,7 +89,14 @@ namespace SaveStates
 	  private:
 		void ReleaseAndWaitForCores();
 
+		// Both are best effort. A GPU thread that cannot reach its safe point must not
+		// make saving impossible, so failure downgrades to the previous behaviour (drained
+		// ring, running GPU thread) and is logged rather than aborting the operation.
+		bool AcquireGpuThread(uint32 timeoutMs);
+		void ReleaseGpuThread();
+
 		QuiesceStatus m_status = QuiesceStatus::SchedulerNotRunning;
 		bool m_held = false;
+		bool m_gpuParked = false;
 	};
 } // namespace SaveStates

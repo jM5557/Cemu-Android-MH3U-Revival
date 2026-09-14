@@ -8,6 +8,11 @@
 #include <mutex>
 #include <thread>
 
+// Declared here rather than including Latte.h, which drags in the whole GPU register and
+// texture layer for two symbols.
+bool Latte_GetStopSignal();
+void Latte_DropCachesForStateLoad();
+
 namespace SaveStates
 {
 	static std::atomic<bool> s_quiesceRequested{false};
@@ -15,6 +20,17 @@ namespace SaveStates
 	static std::mutex s_barrierMutex;
 	static std::condition_variable s_barrierCv;
 	static uint32 s_parkedCoreCount = 0;
+
+	// GPU thread handshake. Separate flags from the PPC barrier because the GPU parks at a
+	// different kind of safe point and, unlike a core, may legitimately never reach it.
+	static std::atomic<bool> s_gpuParkRequested{false};
+	static std::atomic<bool> s_gpuParked{false};
+	static std::atomic<bool> s_gpuCacheDropPending{false};
+
+	// Generous on purpose. Leaving the barrier can involve tearing down every cached
+	// texture and its renderer-side resources, which is far slower than reaching the
+	// barrier was; this bound only exists so a wedged GPU cannot hang the GUI thread.
+	static constexpr uint32 kGpuReleaseTimeoutMs = 10000;
 
 	bool IsQuiesceRequested()
 	{
@@ -35,6 +51,54 @@ namespace SaveStates
 		cemu_assert_debug(s_parkedCoreCount > 0);
 		s_parkedCoreCount--;
 		s_barrierCv.notify_all();
+	}
+
+	bool IsGpuStateWorkPending()
+	{
+		return s_gpuParkRequested.load(std::memory_order_relaxed) ||
+			   s_gpuCacheDropPending.load(std::memory_order_relaxed);
+	}
+
+	void RequestGpuCacheDropOnRelease()
+	{
+		s_gpuCacheDropPending.store(true, std::memory_order_release);
+	}
+
+	void GpuHandleStateWork()
+	{
+		if (!IsGpuStateWorkPending())
+			return;
+
+		{
+			std::unique_lock lock(s_barrierMutex);
+			if (s_gpuParkRequested.load(std::memory_order_relaxed))
+			{
+				s_gpuParked.store(true, std::memory_order_relaxed);
+				s_barrierCv.notify_all();
+				while (s_gpuParkRequested.load(std::memory_order_relaxed))
+				{
+					// Never hold the GPU thread here across a shutdown: Latte_Stop() joins
+					// this thread, so a scope that outlived its owner would deadlock the
+					// emulator on exit. Waking periodically also means a missed
+					// notification costs a poll interval rather than a hang.
+					if (Latte_GetStopSignal())
+						break;
+					s_barrierCv.wait_for(lock, std::chrono::milliseconds(20));
+				}
+			}
+		}
+
+		// Outside the lock: this is a long operation and takes renderer locks of its own.
+		// It runs on the Latte thread, at a command-packet boundary, with guest memory
+		// already restored -- the only point where dropping GPU caches is both safe and
+		// meaningful.
+		if (s_gpuCacheDropPending.exchange(false, std::memory_order_acq_rel))
+			Latte_DropCachesForStateLoad();
+
+		// Published last. ReleaseGpuThread() waits on this, so observing it false means any
+		// requested cache drop has already finished.
+		if (s_gpuParked.exchange(false, std::memory_order_release))
+			s_barrierCv.notify_all();
 	}
 
 	const char* GetQuiesceStatusMessage(QuiesceStatus status)
@@ -137,6 +201,10 @@ namespace SaveStates
 		// Cores are parked, so nothing new enters the ring from here on.
 		DrainGpuRingBuffer(timeoutMs);
 
+		// Only now can the GPU thread be parked: it is the thread that drains the ring, so
+		// asking it to stop any earlier would prevent the drain from ever completing.
+		m_gpuParked = AcquireGpuThread(timeoutMs);
+
 		m_status = QuiesceStatus::Success;
 		m_held = true;
 	}
@@ -145,8 +213,67 @@ namespace SaveStates
 	{
 		if (!m_held)
 			return;
+		// GPU first. Releasing it here means a pending cache drop has run to completion
+		// before any guest code is allowed to submit a drawcall against the restored world.
+		ReleaseGpuThread();
 		ReleaseAndWaitForCores();
 		s_scopeActive.store(false);
+	}
+
+	bool QuiesceScope::AcquireGpuThread(uint32 timeoutMs)
+	{
+		{
+			std::unique_lock lock(s_barrierMutex);
+			cemu_assert_debug(!s_gpuParked.load(std::memory_order_relaxed));
+			s_gpuParkRequested.store(true, std::memory_order_relaxed);
+		}
+		s_barrierCv.notify_all();
+
+		std::unique_lock lock(s_barrierMutex);
+		const bool parked = s_barrierCv.wait_for(lock, std::chrono::milliseconds(timeoutMs),
+												 [] { return s_gpuParked.load(std::memory_order_relaxed); });
+		lock.unlock();
+		if (!parked)
+		{
+			// A GPU blocked on work the parked cores were meant to provide will not reach
+			// its safe point. Withdraw the request and carry on: the resulting state has a
+			// drained ring but a live GPU thread, which is exactly what was captured before
+			// the GPU joined the world-stop.
+			s_gpuParkRequested.store(false, std::memory_order_relaxed);
+			s_barrierCv.notify_all();
+			cemuLog_log(LogType::Force, "Save state: GPU thread did not reach a safe point within {}ms", timeoutMs);
+			return false;
+		}
+		return true;
+	}
+
+	void QuiesceScope::ReleaseGpuThread()
+	{
+		{
+			std::unique_lock lock(s_barrierMutex);
+			s_gpuParkRequested.store(false, std::memory_order_relaxed);
+		}
+		s_barrierCv.notify_all();
+
+		if (!m_gpuParked)
+		{
+			// The GPU never parked, so nothing is going to clear the flag on the way out of
+			// the barrier. Any pending drop still happens, just on the Latte thread's own
+			// schedule the next time it goes idle.
+			if (s_gpuCacheDropPending.load(std::memory_order_acquire))
+				cemuLog_log(LogType::Force, "Save state: GPU cache drop deferred to the next idle point");
+			return;
+		}
+		m_gpuParked = false;
+
+		// The GPU clears s_gpuParked only after running any pending cache drop, so waiting
+		// for it here is what orders the drop ahead of the PPC cores resuming.
+		std::unique_lock lock(s_barrierMutex);
+		if (!s_barrierCv.wait_for(lock, std::chrono::milliseconds(kGpuReleaseTimeoutMs),
+								  [] { return !s_gpuParked.load(std::memory_order_relaxed); }))
+		{
+			cemuLog_log(LogType::Force, "Save state: GPU thread did not resume within {}ms", kGpuReleaseTimeoutMs);
+		}
 	}
 
 	void QuiesceScope::ReleaseAndWaitForCores()
