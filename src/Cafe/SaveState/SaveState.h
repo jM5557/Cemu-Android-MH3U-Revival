@@ -31,4 +31,26 @@ namespace SaveStates
 
 	// Fingerprint of the currently running world, for UI and for gating loads.
 	StateFingerprint BuildCurrentFingerprint();
+
+	// Numbered slots for the running title. Slot 0 is what the plain save/load commands
+	// use, so existing muscle memory and the test tooling keep working.
+	constexpr uint32 kSlotCount = 10;
+
+	// Empty when no title is running -- states are per title and meaningless without one.
+	fs::path GetSlotPath(uint32 slot);
+
+	struct SlotInfo
+	{
+		uint32 slot = 0;
+		bool exists = false;
+		StateHead head;
+		// Empty when this state can be loaded into the running world, otherwise the reason,
+		// phrased for display.
+		std::string incompatibility;
+	};
+
+	// Describes a slot without inflating it. The container keeps HEAD outside the zstd
+	// frame precisely so a picker can list every slot without reading hundreds of
+	// megabytes of body per entry.
+	SlotInfo QuerySlot(uint32 slot);
 } // namespace SaveStates

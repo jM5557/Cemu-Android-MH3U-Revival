@@ -2,10 +2,15 @@
 #include <IOSU/iosu_ipc_common.h>
 #include "fsa_types.h"
 
+namespace SaveStates { class StateStream; }
+
 namespace iosu
 {
 	namespace fsa
 	{
+		// Reopens the host files behind guest FSA handles after a state load.
+		void FSADoState(SaveStates::StateStream& s);
+
 
 		struct FSARequest
 		{

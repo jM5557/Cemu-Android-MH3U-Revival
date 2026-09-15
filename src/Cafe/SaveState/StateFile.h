@@ -12,6 +12,11 @@ namespace SaveStates
 	//                      that may be several hundred megabytes
 	//   [zstd frame]       every other chunk, as a single stream
 	constexpr uint32 kStateFileMagic = 0x43535441; // 'CSTA'
+	// Bumped whenever the body layout changes. It is checked before a single byte of guest
+	// memory is touched, which is the whole point: a layout change is otherwise only caught
+	// at the first mismatching chunk marker, by which time MEMR has already overwritten
+	// hundreds of megabytes and there is no way back. Refusing is recoverable; corrupting
+	// is not.
 	constexpr uint32 kStateFormatVersion = 1;
 
 	struct StateFileHeader

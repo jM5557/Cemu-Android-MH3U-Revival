@@ -140,6 +140,17 @@ enum
 	MAINFRAME_MENU_ID_TIMER_SPEED_025X = 20705,
 	MAINFRAME_MENU_ID_TIMER_SPEED_0125X = 20706,
 
+	// save state slots
+	MAINFRAME_MENU_ID_FILE_SAVE_STATE_SLOT_0 = 20800,
+	MAINFRAME_MENU_ID_FILE_SAVE_STATE_SLOT_LAST = MAINFRAME_MENU_ID_FILE_SAVE_STATE_SLOT_0 + 15,
+	MAINFRAME_MENU_ID_FILE_LOAD_STATE_SLOT_0 = 20820,
+	MAINFRAME_MENU_ID_FILE_LOAD_STATE_SLOT_LAST = MAINFRAME_MENU_ID_FILE_LOAD_STATE_SLOT_0 + 15,
+	MAINFRAME_MENU_ID_FILE_DELETE_STATE_SLOT_0 = 20840,
+	MAINFRAME_MENU_ID_FILE_DELETE_STATE_SLOT_LAST = MAINFRAME_MENU_ID_FILE_DELETE_STATE_SLOT_0 + 15,
+	MAINFRAME_MENU_ID_FILE_SAVE_STATE_TO_FILE = 20860,
+	MAINFRAME_MENU_ID_FILE_LOAD_STATE_FROM_FILE,
+	MAINFRAME_MENU_ID_FILE_OPEN_SAVESTATE_FOLDER,
+
 	// nfc->Touch NFC file
 	MAINFRAME_MENU_ID_NFC_TOUCH_NFC_FILE = 21000,
 	MAINFRAME_MENU_ID_NFC_RECENT_0,
@@ -196,6 +207,12 @@ EVT_MENU(MAINFRAME_MENU_ID_FILE_EXIT, MainWindow::OnFileExit)
 EVT_MENU(MAINFRAME_MENU_ID_FILE_END_EMULATION, MainWindow::OnFileMenu)
 EVT_MENU(MAINFRAME_MENU_ID_FILE_SAVE_STATE, MainWindow::OnSaveState)
 EVT_MENU(MAINFRAME_MENU_ID_FILE_LOAD_STATE, MainWindow::OnLoadState)
+EVT_MENU_RANGE(MAINFRAME_MENU_ID_FILE_SAVE_STATE_SLOT_0, MAINFRAME_MENU_ID_FILE_SAVE_STATE_SLOT_LAST, MainWindow::OnSaveStateSlot)
+EVT_MENU_RANGE(MAINFRAME_MENU_ID_FILE_LOAD_STATE_SLOT_0, MAINFRAME_MENU_ID_FILE_LOAD_STATE_SLOT_LAST, MainWindow::OnLoadStateSlot)
+EVT_MENU_RANGE(MAINFRAME_MENU_ID_FILE_DELETE_STATE_SLOT_0, MAINFRAME_MENU_ID_FILE_DELETE_STATE_SLOT_LAST, MainWindow::OnDeleteStateSlot)
+EVT_MENU(MAINFRAME_MENU_ID_FILE_SAVE_STATE_TO_FILE, MainWindow::OnSaveStateToFile)
+EVT_MENU(MAINFRAME_MENU_ID_FILE_LOAD_STATE_FROM_FILE, MainWindow::OnLoadStateFromFile)
+EVT_MENU(MAINFRAME_MENU_ID_FILE_OPEN_SAVESTATE_FOLDER, MainWindow::OnOpenSaveStateFolder)
 EVT_MENU_RANGE(MAINFRAME_MENU_ID_FILE_RECENT_0 + 0, MAINFRAME_MENU_ID_FILE_RECENT_LAST, MainWindow::OnFileMenu)
 // options -> region menu
 EVT_MENU_RANGE(MAINFRAME_MENU_ID_OPTIONS_ACCOUNT_1, MAINFRAME_MENU_ID_OPTIONS_ACCOUNT_12, MainWindow::OnAccountSelect)
@@ -810,28 +827,113 @@ void MainWindow::OnFileExit(wxCommandEvent& event)
 	Close();
 }
 
-static fs::path GetSaveStateSlotPath()
-{
-	// Phase 0 is a single fixed slot. Slots, hotkeys and a browser come with the UX phase.
-	return ActiveSettings::GetUserDataPath("savestates/{:016x}/slot0.cst", (uint64)CafeSystem::GetForegroundTitleId());
-}
-
-// Both handlers run on the wx GUI thread, which is what the quiesce protocol requires
+// All four handlers run on the wx GUI thread, which is what the quiesce protocol requires
 // (a scheduler thread would wait for itself to park). The capture is synchronous, so the
 // UI is unresponsive for the duration -- bounded by the quiesce timeout plus the memory
 // copy. Moving this to a worker thread is a UX-phase item.
+void MainWindow::SaveStateToSlot(uint32 slot)
+{
+	const fs::path path = SaveStates::GetSlotPath(slot);
+	if (path.empty())
+		return;
+	const SaveStates::OperationResult result = SaveStates::SaveToFile(path);
+	if (!result.success)
+	{
+		wxMessageBox(wxString::FromUTF8(result.message), _("Save state failed"), wxOK | wxICON_ERROR, this);
+		return;
+	}
+	// The slot menus carry each slot's timestamp, so they are stale the moment one is
+	// written. Deferred because this runs inside the menu's own event dispatch.
+	CallAfter([this]() { RecreateMenu(); });
+}
+
+void MainWindow::LoadStateFromSlot(uint32 slot)
+{
+	const fs::path path = SaveStates::GetSlotPath(slot);
+	if (path.empty())
+		return;
+	const SaveStates::OperationResult result = SaveStates::LoadFromFile(path);
+	if (!result.success)
+		wxMessageBox(wxString::FromUTF8(result.message), _("Load state failed"), wxOK | wxICON_ERROR, this);
+}
+
+// Slot 0 is what the plain save/load commands act on, so the existing menu entries and
+// anything driving them keep working unchanged.
 void MainWindow::OnSaveState(wxCommandEvent& event)
 {
-	const SaveStates::OperationResult result = SaveStates::SaveToFile(GetSaveStateSlotPath());
-	if (!result.success)
-		wxMessageBox(wxString::FromUTF8(result.message), _("Save state failed"), wxOK | wxICON_ERROR, this);
+	SaveStateToSlot(0);
 }
 
 void MainWindow::OnLoadState(wxCommandEvent& event)
 {
-	const SaveStates::OperationResult result = SaveStates::LoadFromFile(GetSaveStateSlotPath());
+	LoadStateFromSlot(0);
+}
+
+void MainWindow::OnSaveStateSlot(wxCommandEvent& event)
+{
+	SaveStateToSlot((uint32)(event.GetId() - MAINFRAME_MENU_ID_FILE_SAVE_STATE_SLOT_0));
+}
+
+void MainWindow::OnLoadStateSlot(wxCommandEvent& event)
+{
+	LoadStateFromSlot((uint32)(event.GetId() - MAINFRAME_MENU_ID_FILE_LOAD_STATE_SLOT_0));
+}
+
+// Deleting is the one management action that cannot be done from inside the emulator any
+// other way, and a slot whose contents you cannot identify is a slot you will not reuse.
+void MainWindow::OnDeleteStateSlot(wxCommandEvent& event)
+{
+	const uint32 slot = (uint32)(event.GetId() - MAINFRAME_MENU_ID_FILE_DELETE_STATE_SLOT_0);
+	const fs::path path = SaveStates::GetSlotPath(slot);
+	if (path.empty())
+		return;
+	if (wxMessageBox(wxString::Format(_("Delete the save state in slot %u?"), slot), _("Delete save state"),
+					 wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES)
+		return;
+	std::error_code ec;
+	fs::remove(path, ec);
+	if (ec)
+		wxMessageBox(wxString::FromUTF8(ec.message()), _("Delete save state failed"), wxOK | wxICON_ERROR, this);
+	CallAfter([this]() { RecreateMenu(); });
+}
+
+static wxString GetStateFileWildcard()
+{
+	return _("Cemu save states (*.cst)|*.cst|All files (*.*)|*");
+}
+
+// Save states are per title and per build, so a file outside the slot folder is only
+// useful for keeping one aside or moving it between machines running the same build.
+// The fingerprint check still gates the load, so a mismatched file is refused rather
+// than half-applied.
+void MainWindow::OnSaveStateToFile(wxCommandEvent& event)
+{
+	wxFileDialog dialog(this, _("Save state to file"), wxEmptyString, "state.cst",
+						GetStateFileWildcard(), wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+	if (dialog.ShowModal() == wxID_CANCEL || dialog.GetPath().IsEmpty())
+		return;
+	const SaveStates::OperationResult result = SaveStates::SaveToFile(_utf8ToPath(dialog.GetPath().utf8_string()));
+	if (!result.success)
+		wxMessageBox(wxString::FromUTF8(result.message), _("Save state failed"), wxOK | wxICON_ERROR, this);
+}
+
+void MainWindow::OnLoadStateFromFile(wxCommandEvent& event)
+{
+	wxFileDialog dialog(this, _("Load state from file"), wxEmptyString, wxEmptyString,
+						GetStateFileWildcard(), wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+	if (dialog.ShowModal() == wxID_CANCEL || dialog.GetPath().IsEmpty())
+		return;
+	const SaveStates::OperationResult result = SaveStates::LoadFromFile(_utf8ToPath(dialog.GetPath().utf8_string()));
 	if (!result.success)
 		wxMessageBox(wxString::FromUTF8(result.message), _("Load state failed"), wxOK | wxICON_ERROR, this);
+}
+
+void MainWindow::OnOpenSaveStateFolder(wxCommandEvent& event)
+{
+	const fs::path path = SaveStates::GetSlotPath(0);
+	if (path.empty())
+		return;
+	wxLaunchDefaultApplication(wxHelper::FromPath(path.parent_path()));
 }
 
 void MainWindow::TogglePadView()
@@ -2219,10 +2321,63 @@ void MainWindow::RecreateMenu()
 	}
 	else
 	{
-		// save states are only meaningful while a title is running. Phase 0 supports a
-		// single slot and load-into-running-title only.
-		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_SAVE_STATE, _("Save state"));
-		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_LOAD_STATE, _("Load state"));
+		// Save states are only meaningful while a title is running, and phase 0 supports
+		// load-into-running-title only.
+		//
+		// The slot submenus are the picker: each entry carries the state's timestamp, read
+		// from the file's uncompressed header, so choosing does not mean guessing which
+		// slot0/slot1 was which. A slot that exists but cannot be loaded into this world
+		// says why and is disabled, rather than failing after being picked.
+		wxMenu* saveStateMenu = new wxMenu();
+		wxMenu* loadStateMenu = new wxMenu();
+		wxMenu* deleteStateMenu = new wxMenu();
+		bool anyStateExists = false;
+		for (uint32 slot = 0; slot < SaveStates::kSlotCount; slot++)
+		{
+			const SaveStates::SlotInfo info = SaveStates::QuerySlot(slot);
+			wxString description;
+			if (!info.exists)
+				description = _("empty");
+			else if (!info.incompatibility.empty())
+				description = wxString::FromUTF8(info.incompatibility);
+			else
+			{
+				const std::time_t timestamp = (std::time_t)info.head.unixTimestamp;
+				std::tm local{};
+#if BOOST_OS_WINDOWS
+				localtime_s(&local, &timestamp);
+#else
+				localtime_r(&timestamp, &local);
+#endif
+				char formatted[64];
+				std::strftime(formatted, sizeof(formatted), "%Y-%m-%d %H:%M:%S", &local);
+				description = wxString::FromUTF8(formatted);
+			}
+
+			const wxString label = wxString::Format(_("Slot %u  (%s)"), slot, description);
+			saveStateMenu->Append(MAINFRAME_MENU_ID_FILE_SAVE_STATE_SLOT_0 + slot, label);
+			wxMenuItem* loadItem = loadStateMenu->Append(MAINFRAME_MENU_ID_FILE_LOAD_STATE_SLOT_0 + slot, label);
+			wxMenuItem* deleteItem = deleteStateMenu->Append(MAINFRAME_MENU_ID_FILE_DELETE_STATE_SLOT_0 + slot, label);
+			// A slot that cannot be loaded can still be deleted -- that is precisely when
+			// you want to get rid of it.
+			if (!info.exists || !info.incompatibility.empty())
+				loadItem->Enable(false);
+			deleteItem->Enable(info.exists);
+			anyStateExists |= info.exists;
+		}
+		saveStateMenu->AppendSeparator();
+		saveStateMenu->Append(MAINFRAME_MENU_ID_FILE_SAVE_STATE_TO_FILE, _("To file..."));
+		loadStateMenu->AppendSeparator();
+		loadStateMenu->Append(MAINFRAME_MENU_ID_FILE_LOAD_STATE_FROM_FILE, _("From file..."));
+
+		m_fileMenu->AppendSubMenu(saveStateMenu, _("Save state to"));
+		m_fileMenu->AppendSubMenu(loadStateMenu, _("Load state from"));
+		wxMenuItem* deleteSubMenuItem = m_fileMenu->AppendSubMenu(deleteStateMenu, _("Delete save state"));
+		deleteSubMenuItem->Enable(anyStateExists);
+		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_OPEN_SAVESTATE_FOLDER, _("Open save state folder"));
+		m_fileMenu->AppendSeparator();
+		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_SAVE_STATE, _("Quick save state (slot 0)"));
+		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_LOAD_STATE, _("Quick load state (slot 0)"));
 		m_fileMenu->AppendSeparator();
 #ifdef CEMU_DEBUG_ASSERT
 		m_fileMenu->Append(MAINFRAME_MENU_ID_FILE_END_EMULATION, _("Close game"));

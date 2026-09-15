@@ -101,6 +101,14 @@ public:
 	void OnFileExit(wxCommandEvent& event);
 	void OnSaveState(wxCommandEvent& event);
 	void OnLoadState(wxCommandEvent& event);
+	void OnSaveStateSlot(wxCommandEvent& event);
+	void OnLoadStateSlot(wxCommandEvent& event);
+	void SaveStateToSlot(uint32 slot);
+	void LoadStateFromSlot(uint32 slot);
+	void OnDeleteStateSlot(wxCommandEvent& event);
+	void OnSaveStateToFile(wxCommandEvent& event);
+	void OnLoadStateFromFile(wxCommandEvent& event);
+	void OnOpenSaveStateFolder(wxCommandEvent& event);
 	void OnNFCMenu(wxCommandEvent& event);
 	void OnOptionsInput(wxCommandEvent& event);
 	void OnAccountSelect(wxCommandEvent& event);

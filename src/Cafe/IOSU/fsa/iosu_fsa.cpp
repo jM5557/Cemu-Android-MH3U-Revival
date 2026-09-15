@@ -8,6 +8,7 @@
 #include "Cafe/HW/Latte/Core/LatteBufferCache.h" // also remove this dependency
 
 #include "Cafe/HW/MMU/MMU.h"
+#include "Cafe/SaveState/StateStream.h"
 
 using namespace iosu::kernel;
 
@@ -162,9 +163,12 @@ namespace iosu
 			return tmp;
 		}
 
-		FSCVirtualFile* __FSAOpenNode(FSAClient* client, std::string_view path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus)
+		FSCVirtualFile* __FSAOpenNode(FSAClient* client, std::string_view path, FSC_ACCESS_FLAG accessFlags, sint32& fscStatus,
+									  std::string* translatedPathOut = nullptr)
 		{
 			std::string translatedPath = __FSATranslatePath(client, path);
+			if (translatedPathOut)
+				*translatedPathOut = translatedPath;
 			return fsc_open(translatedPath.c_str(), accessFlags, &fscStatus);
 		}
 
@@ -174,10 +178,16 @@ namespace iosu
 				bool isAllocated{false};
 				FSCVirtualFile* fscFile;
 				uint16 handleCheckValue;
+				// What this handle was opened on. Recorded so it can be reopened after a
+				// save state load: the guest keeps its handle value across a load, but the
+				// FSCVirtualFile behind it belongs to the host and does not survive.
+				std::string path;
+				FSC_ACCESS_FLAG accessFlags{FSC_ACCESS_FLAG::NONE};
 			};
 
 		public:
-			FSA_RESULT AllocateHandle(FSResHandle& handleOut, FSCVirtualFile* fscFile)
+			FSA_RESULT AllocateHandle(FSResHandle& handleOut, FSCVirtualFile* fscFile,
+									  std::string_view path = {}, FSC_ACCESS_FLAG accessFlags = FSC_ACCESS_FLAG::NONE)
 			{
 				for (size_t i = 0; i < m_handleTable.size(); i++)
 				{
@@ -189,6 +199,8 @@ namespace iosu
 					it.handleCheckValue = checkValue;
 					it.fscFile = fscFile;
 					it.isAllocated = true;
+					it.path = path;
+					it.accessFlags = accessFlags;
 					uint32 handleVal = ((uint32)i << 16) | (uint32)checkValue;
 					handleOut = (FSResHandle)handleVal;
 					return FSA_RESULT::OK;
@@ -210,6 +222,8 @@ namespace iosu
 					return FSA_RESULT::INVALID_FILE_HANDLE;
 				it.fscFile = nullptr;
 				it.isAllocated = false;
+				it.path.clear();
+				it.accessFlags = FSC_ACCESS_FLAG::NONE;
 				return FSA_RESULT::OK;
 			}
 
@@ -220,11 +234,114 @@ namespace iosu
 				if (index >= m_handleTable.size())
 					return nullptr;
 				auto& it = m_handleTable.at(index);
-				if (!it.isAllocated)
+				if (!it.isAllocated || it.handleCheckValue != checkValue)
+				{
+					// A guest holding a handle the host cannot resolve is normally a game
+					// bug, but after a save state load it means this table and the restored
+					// guest world have drifted apart. The caller turns it into an ordinary
+					// error return, so without this the symptom is silent -- a stream that
+					// simply stops being refilled.
+					cemuLog_logDebug(LogType::Force, "FSA: handle 0x{:08x} does not resolve", (uint32)handle);
 					return nullptr;
-				if (it.handleCheckValue != checkValue)
-					return nullptr;
+				}
 				return it.fscFile;
+			}
+
+			// Reopens every handle that was open when the state was captured.
+			//
+			// Guest memory keeps its FSA handles across a load, but each one is only an
+			// index plus a check value into this host table -- the FSCVirtualFile it names
+			// belongs to the loading session. Left alone, a restored game holds handles
+			// that resolve to nothing: reads fail, the game treats it as an ordinary error,
+			// and whatever it was streaming quietly stops.
+			void DoState(SaveStates::StateStream& s, const char* tableName)
+			{
+				std::vector<uint32> indices;
+				std::vector<uint32> checkValues;
+				std::vector<uint32> accessFlags;
+				std::vector<uint32> seekPositions;
+				std::vector<std::string> paths;
+
+				if (!s.IsReading())
+				{
+					for (size_t i = 0; i < m_handleTable.size(); i++)
+					{
+						auto& it = m_handleTable.at(i);
+						if (!it.isAllocated || it.path.empty())
+							continue;
+						indices.emplace_back((uint32)i);
+						checkValues.emplace_back(it.handleCheckValue);
+						accessFlags.emplace_back((uint32)it.accessFlags);
+						seekPositions.emplace_back(it.fscFile ? fsc_getFileSeek(it.fscFile) : 0);
+						paths.emplace_back(it.path);
+					}
+				}
+
+				s.DoPODVector(indices);
+				s.DoPODVector(checkValues);
+				s.DoPODVector(accessFlags);
+				s.DoPODVector(seekPositions);
+				uint32 pathCount = (uint32)paths.size();
+				s.Do(pathCount);
+				if (s.IsReading())
+				{
+					if (pathCount != indices.size())
+					{
+						s.SetError("FSA handle table is inconsistent");
+						return;
+					}
+					paths.resize(pathCount);
+				}
+				for (uint32 i = 0; i < pathCount && !s.HasError(); i++)
+					s.DoString(paths[i]);
+				s.Do(m_currentCounter);
+				if (!s.IsReading() || s.HasError())
+					return;
+
+				// Drop what the loading session had open before rebuilding.
+				for (auto& it : m_handleTable)
+				{
+					if (it.isAllocated && it.fscFile)
+						fsc_close(it.fscFile);
+					it = _FSAHandleResource{};
+				}
+
+				uint32 reopened = 0, failed = 0;
+				for (size_t n = 0; n < indices.size(); n++)
+				{
+					const uint32 index = indices[n];
+					if (index >= m_handleTable.size())
+					{
+						s.SetError("FSA handle index out of range");
+						return;
+					}
+					// Never reopen with a create-or-truncate flag. The host filesystem is
+					// not part of a save state, so the file on disk is whatever the loading
+					// session left; reopening a "w" handle as written would destroy it, and
+					// a game save is exactly the kind of file that would be open that way.
+					FSC_ACCESS_FLAG flags = (FSC_ACCESS_FLAG)accessFlags[n];
+					flags &= ~(FSC_ACCESS_FLAG::FILE_ALWAYS_CREATE | FSC_ACCESS_FLAG::FILE_ALLOW_CREATE);
+
+					sint32 fscStatus = 0;
+					FSCVirtualFile* fscFile = fsc_open(paths[n].c_str(), flags, &fscStatus);
+					auto& it = m_handleTable.at(index);
+					if (!fscFile)
+					{
+						// The handle stays unallocated, so the guest gets a clean error
+						// rather than reading from the wrong file.
+						failed++;
+						cemuLog_log(LogType::Force, "Save state: could not reopen {} '{}'", tableName, paths[n]);
+						continue;
+					}
+					it.isAllocated = true;
+					it.fscFile = fscFile;
+					it.handleCheckValue = (uint16)checkValues[n];
+					it.path = paths[n];
+					it.accessFlags = flags;
+					fsc_setFileSeek(fscFile, seekPositions[n]);
+					reopened++;
+				}
+				cemuLog_log(LogType::Force, "Save state: reopened {} {} ({} failed)", reopened, tableName, failed);
 			}
 
 		private:
@@ -280,7 +397,8 @@ namespace iosu
 
 			accessModifier |= FSC_ACCESS_FLAG::OPEN_DIR | FSC_ACCESS_FLAG::OPEN_FILE;
 			sint32 fscStatus;
-			FSCVirtualFile* fscFile = __FSAOpenNode(client, path, accessModifier, fscStatus);
+			std::string translatedPath;
+			FSCVirtualFile* fscFile = __FSAOpenNode(client, path, accessModifier, fscStatus, &translatedPath);
 			if (!fscFile)
 				return FSA_RESULT::NOT_FOUND;
 			if (fscFile->fscGetType() != FSC_TYPE_FILE)
@@ -291,7 +409,7 @@ namespace iosu
 			if (isAppend)
 				fsc_setFileSeek(fscFile, fsc_getFileSize(fscFile));
 			FSResHandle fsFileHandle;
-			FSA_RESULT r = sFileHandleTable.AllocateHandle(fsFileHandle, fscFile);
+			FSA_RESULT r = sFileHandleTable.AllocateHandle(fsFileHandle, fscFile, translatedPath, accessModifier);
 			if (r != FSA_RESULT::OK)
 			{
 				cemuLog_log(LogType::Force, "Exceeded maximum number of FSA file handles");
@@ -325,6 +443,15 @@ namespace iosu
 			*dirHandle = fsDirHandle;
 			cemuLog_log(LogType::CoreinitFile, "Open directory {} (result: ok handle: 0x{})", path, (uint32)*dirHandle);
 			return FSA_RESULT::OK;
+		}
+
+		// Directory iterators are deliberately left out. Reopening one would reset its
+		// iteration position, so a restored game mid-listing would silently see the
+		// directory from the start again -- worse than the clean failure it gets now.
+		void FSADoState(SaveStates::StateStream& s)
+		{
+			s.DoMarker(SaveStates::kMarkerFSAH, "iosu/fsa-handles");
+			sFileHandleTable.DoState(s, "file handles");
 		}
 
 		FSA_RESULT __FSACloseFile(uint32 fileHandle)

@@ -98,6 +98,7 @@ namespace SaveStates
 	constexpr uint32 kMarkerCPUS = 0x43505553; // 'CPUS' cpu/scheduler
 	constexpr uint32 kMarkerTIME = 0x54494D45; // 'TIME' emulated timebase
 	constexpr uint32 kMarkerALRM = 0x414C524D; // 'ALRM' host alarms
+	constexpr uint32 kMarkerFSAH = 0x46534148; // 'FSAH' IOSU file handles
 	constexpr uint32 kMarkerSNDV = 0x534E4456; // 'SNDV' AX voice lists
 	constexpr uint32 kMarkerGX2S = 0x47583253; // 'GX2S' command ring / GPU submission
 	constexpr uint32 kMarkerLATT = 0x4C415454; // 'LATT' Latte GPU state

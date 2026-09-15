@@ -3,6 +3,7 @@
 #include "Cafe/SaveState/StateStream.h"
 
 #include "Cafe/CafeSystem.h"
+#include "config/ActiveSettings.h"
 #include "Cafe/HW/MMU/MMU.h"
 #include "Cafe/HW/Espresso/PPCState.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
@@ -10,6 +11,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
 #include "Cafe/OS/libs/TCL/TCL.h"
 #include "Cafe/OS/libs/snd_core/ax.h"
+#include "Cafe/IOSU/fsa/iosu_fsa.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Common/version.h"
 #include "Cemu/Logging/CemuLogging.h"
@@ -158,6 +160,12 @@ namespace SaveStates
 		coreinit::AlarmDoState(s);
 		if (s.HasError())
 			return;
+		// Host file objects behind the guest's FSA handles. Without this a restored game
+		// holds handles that resolve to nothing, and anything it was streaming stops
+		// without an error the game reports.
+		iosu::fsa::FSADoState(s);
+		if (s.HasError())
+			return;
 		// AX voice allocation. Host state that describes guest voices and cannot be derived
 		// from guest memory, so it has to travel in the state file like the alarms do.
 		snd_core::AXVoiceDoState(s);
@@ -260,20 +268,22 @@ namespace SaveStates
 		return WriteStateFile(path, head, body);
 	}
 
-	OperationResult LoadFromFile(const fs::path& path)
+	// Reads the fixed header and the uncompressed HEAD payload, leaving the stream
+	// positioned at the compressed body. Shared by loading and by the slot picker, which
+	// wants the metadata and nothing else.
+	static OperationResult ReadStateHead(std::ifstream& file, const fs::path& path,
+										 StateFileHeader& fileHeader, StateHead& head)
 	{
-		std::ifstream file(path, std::ios::binary);
 		if (!file.is_open())
 			return OperationResult::Fail(fmt::format("Failed to open '{}'", _pathToUtf8(path)));
 
-		StateFileHeader fileHeader{};
 		file.read((char*)&fileHeader, sizeof(fileHeader));
 		if (!file.good())
 			return OperationResult::Fail("State file is truncated");
 		if (fileHeader.magic != kStateFileMagic)
 			return OperationResult::Fail("Not a Cemu save state file");
 		if (fileHeader.formatVersion != kStateFormatVersion)
-			return OperationResult::Fail(fmt::format("Unsupported state format version {} (expected {})",
+			return OperationResult::Fail(fmt::format("State was made by a different Cemu build (format {}, this build uses {})",
 													 fileHeader.formatVersion, kStateFormatVersion));
 
 		std::vector<uint8> headBuffer(fileHeader.headSize);
@@ -284,11 +294,55 @@ namespace SaveStates
 				return OperationResult::Fail("State file is truncated (header)");
 		}
 
-		StateHead head;
 		StateStream headStream = StateStream::MakeReader(headBuffer);
 		head.DoState(headStream);
 		if (headStream.HasError())
 			return OperationResult::Fail(headStream.GetError());
+		return OperationResult::Ok();
+	}
+
+	fs::path GetSlotPath(uint32 slot)
+	{
+		const uint64 titleId = (uint64)CafeSystem::GetForegroundTitleId();
+		if (titleId == 0 || slot >= kSlotCount)
+			return {};
+		return ActiveSettings::GetUserDataPath("savestates/{:016x}/slot{}.cst", titleId, slot);
+	}
+
+	SlotInfo QuerySlot(uint32 slot)
+	{
+		SlotInfo info;
+		info.slot = slot;
+		const fs::path path = GetSlotPath(slot);
+		if (path.empty())
+			return info;
+		std::error_code ec;
+		if (!fs::exists(path, ec))
+			return info;
+
+		std::ifstream file(path, std::ios::binary);
+		StateFileHeader fileHeader{};
+		const OperationResult result = ReadStateHead(file, path, fileHeader, info.head);
+		if (!result.success)
+		{
+			// The slot exists but cannot be described. Surfacing that is better than
+			// hiding it, or the user picks a slot that then refuses to load.
+			info.exists = true;
+			info.incompatibility = result.message;
+			return info;
+		}
+		info.exists = true;
+		info.incompatibility = info.head.fingerprint.GetIncompatibilityReason(BuildCurrentFingerprint());
+		return info;
+	}
+
+	OperationResult LoadFromFile(const fs::path& path)
+	{
+		std::ifstream file(path, std::ios::binary);
+		StateFileHeader fileHeader{};
+		StateHead head;
+		if (const OperationResult headResult = ReadStateHead(file, path, fileHeader, head); !headResult.success)
+			return headResult;
 
 		// Check compatibility before anything touches the running world.
 		const std::string incompatibility = head.fingerprint.GetIncompatibilityReason(BuildCurrentFingerprint());

@@ -36,11 +36,8 @@ Two results worth stating plainly because both were predicted to go the other wa
 - **Newly acquired audio voices play correctly**, which is the independent confirmation that
   the `SNDV` fix put the voice allocator back in agreement with guest memory.
 
-**One residual defect:** the BGM that was streaming at save time loops its buffer instead of
-resuming. Sound effects and all new audio are fine. It clears itself at the next area
-transition, when the game re-initialises its stream. So the scope is narrow -- a voice that was
-mid-stream across the save, whose refill never restarts -- and it is the obvious next thread to
-pull. Everything around it (voice allocation, FS, scheduling) is demonstrably healthy.
+The BGM defect found here (a streamed track looping instead of resuming) was tracked down the
+same evening and fixed -- see §3.3. Audio now survives a load intact.
 
 The blocker described in the previous §3.1 is fixed, and the guess recorded there was wrong in
 an instructive way -- see §3.1 below for what it actually was.
@@ -203,6 +200,90 @@ outcome than a hung emulator with nothing in guest state to explain it.
 - **Per-host-thread CPU sampling from outside.** `GetThreadDescription` + `TotalProcessorTime`
   deltas over a few seconds, on the stalled process, no rebuild. This is what separated
   "blocked" from "spinning" and it should be the second thing tried after the watchdog.
+
+### 3.3 The BGM loop: IOSU file handles (FIXED 2026-09-14)
+
+After the world ran, one defect remained: the music that was streaming at save time looped a
+~10 second buffer instead of continuing. Sound effects were fine, and it cleared itself at the
+next area transition.
+
+**Measured, in this order.** Each step killed a hypothesis, which is the only reason the last
+one was reached:
+
+1. `threadrates.py` before the save and after the load: the active thread set and their rates
+   were **identical**, and eleven wake counters had gone backwards (proof the load took). So no
+   thread was parked -- the "stream thread never got signalled" theory was wrong.
+2. The AX thread burns ~3 guest cycles per timeslice both before and after, so MH3U does not
+   drive streaming from `AXIst_HandleFrameCallbacks`. Callbacks were not it either.
+3. `voices.py`: the BGM is twelve voices with `loopflag=1` over ~393k-sample buffers -- a ~10
+   second loop, matching the symptom exactly.
+4. `streambuf.py` on those buffers, **with a control**: static after a load, changing in a
+   healthy session. The game genuinely stops refilling.
+
+#### Root cause
+
+An FSA file handle is `(slotIndex << 16) | checkValue` into `sFileHandleTable` -- a **host**
+table whose check values come from a host counter (`iosu_fsa.cpp`). Guest memory keeps its
+handles across a load; the `FSCVirtualFile` behind them belongs to the loading session. The
+slot has since been released or reallocated, so `GetByHandle` returns null, the read fails, the
+game treats it as an ordinary error and stops refilling, and the voice loops. Nothing hangs and
+nothing is logged.
+
+It recovers at an area transition because the game closes and reopens the stream, getting a
+fresh handle that host and guest agree on.
+
+#### Fix
+
+An `FSAH` chunk recording each open handle's path, access flags and seek position, reopening
+them on load at the same slot index and check value so guest handles resolve again. Confirmed:
+`Save state: reopened 2 file handles (0 failed)`, and the music survives.
+
+Two deliberate limits:
+
+- **Create and truncate flags are stripped on reopen.** The host filesystem is not part of a
+  save state, so the file on disk is whatever the loading session left. Reopening a `"w"`
+  handle as originally opened would truncate it, and a game save is exactly the kind of file
+  held open that way.
+- **Directory iterators are excluded.** Reopening one resets its position, so a game mid-listing
+  would silently restart the directory. A clean failure beats quietly wrong data.
+
+A handle that cannot be reopened stays unallocated, so the guest gets a clean error rather than
+reading from the wrong file.
+
+### 3.4 The through-line
+
+Four separate failures, one cause. Every one was **host state describing guest objects**,
+invisible to a snapshot of guest RAM:
+
+| Failure | Host state |
+|---|---|
+| Nothing resumes | Host C++ continuations parked on fibers |
+| Corrupt frames, torn memory | Latte thread reading guest memory during MEMR |
+| A core spins forever, world dies | `__AXVoicesPerPriority` / `__AXFreeVoices` |
+| Streamed audio silently stops | `sFileHandleTable` |
+
+This is the finding, and it generalises past MH3U and past Cemu: in an HLE emulator a RAM
+snapshot is necessary and nowhere near sufficient. `save-states-hle-restart-audit.md` classifies
+44 blocking calls on the same principle.
+
+---
+
+## 3.5 Tracking next
+
+**Undo load state.** A load is destructive and irreversible: it overwrites the live session,
+and whatever had not been saved is gone. Loading a good slot again does not recover it. Worse,
+when a load leaves a core spinning in host C++, a second load cannot even be attempted --
+`QuiesceScope` waits 2000 ms for every core to reach the rendezvous, and a core that never
+returns to the idle loop never gets there, so the load times out and fails. There was no way
+out of the AX stall except killing Cemu.
+
+Design note for whoever picks it up: capture the undo body **inside the load's existing
+quiesce** rather than as a separate pass. The world is already stopped and the body is already
+being assembled, so the marginal cost is one memcpy instead of a second stop-the-world. Hold it
+uncompressed in memory; it never needs to reach disk.
+
+Also still open: the known-unfixed list in §8, and a dedicated save state manager window (the
+slot submenus cover picking, deleting and to/from file today).
 
 ---
 
