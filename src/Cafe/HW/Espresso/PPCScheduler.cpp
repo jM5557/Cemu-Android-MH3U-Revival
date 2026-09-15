@@ -58,6 +58,22 @@ void _PPCCore_callbackExit(PPCInterpreter_t* hCPU)
 	hCPU->instructionPointer = 0;
 }
 
+// Address of the guest-callable stub installed below as a guest callback's return address.
+// Cached so there is one stable value to compare return addresses against, which is how
+// anything else can recognise "this thread is inside a PPC callback".
+//
+// Save states need exactly that. The instructionPointer == 0 written by _PPCCore_callbackExit
+// only means anything to the host loop in PPCCore_executeCallbackInternal, and a state load
+// destroys that loop along with the fiber it lives on. A thread with this stub anywhere in
+// its guest call chain therefore cannot be restarted, however ordinary its own frame looks.
+uint32 PPCCore_getCallbackExitStubAddr()
+{
+	static uint32 s_callbackExitStub = 0;
+	if (s_callbackExitStub == 0)
+		s_callbackExitStub = PPCInterpreter_makeCallableExportDepr(_PPCCore_callbackExit);
+	return s_callbackExitStub;
+}
+
 PPCInterpreter_t* PPCCore_executeCallbackInternal(uint32 functionMPTR)
 {
 	cemu_assert_debug(functionMPTR != 0);
@@ -68,7 +84,7 @@ PPCInterpreter_t* PPCCore_executeCallbackInternal(uint32 functionMPTR)
 	// save area
 	hCPU->gpr[1] -= 16 * 4;
 	// set LR
-	hCPU->spr.LR = PPCInterpreter_makeCallableExportDepr(_PPCCore_callbackExit);
+	hCPU->spr.LR = PPCCore_getCallbackExitStubAddr();
 	// set instruction pointer
 	hCPU->instructionPointer = functionMPTR;
 	// execute code until we return from the function

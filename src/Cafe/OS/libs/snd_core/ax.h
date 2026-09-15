@@ -5,6 +5,8 @@
 
 struct PPCInterpreter_t;
 
+namespace SaveStates { class StateStream; }
+
 namespace snd_core
 {
 	// sndcore2 - AX init param config
@@ -253,6 +255,11 @@ namespace snd_core
 	uint32 AXGetVoiceCurrentOffsetEx(AXVPB* vpb, MPTR sampleBase);
 	void AXSetVoiceLoop(AXVPB* vpb, uint16 loopState);
 	sint32 AXGetVoiceLoopCount(AXVPB* vpb);
+
+	// The voice allocation lists are host state, so they are neither covered by the guest
+	// memory chunk nor derivable from it -- a freed voice keeps its old priority, leaving
+	// nothing in guest memory that separates free voices from allocated ones.
+	void AXVoiceDoState(SaveStates::StateStream& s);
 
 	// AXIst
 

@@ -9,6 +9,7 @@
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Recompiler/PPCRecompiler.h"
 #include "Cafe/SaveState/Quiesce.h"
+#include "Cafe/SaveState/HostCheckpoint.h"
 #include "Cafe/SaveState/StateStream.h"
 
 #include "util/helpers/Semaphore.h"
@@ -51,6 +52,10 @@ MPTR activeThread[256];
 sint32 activeThreadCount = 0;
 
 void nnNfp_update();
+
+// Declared rather than pulling in ax_internal.h. Cemu leaves its AX interrupt-service thread
+// unnamed, and it is the one service thread whose host body has turned out to matter here.
+namespace snd_core { OSThread_t* AXIst_GetThread(); }
 
 namespace coreinit
 {
@@ -266,6 +271,15 @@ namespace coreinit
 
 	// thread
 	OSThread_t* __currentCoreThread[3] = {};
+
+	// Save state stall diagnostics.
+	//
+	// A core that has stopped dispatching is invisible from guest memory: the thread it is
+	// running has no stored context, and every other thread merely looks like it is waiting --
+	// which is exactly what a healthy game looks like at any instant. These are written on the
+	// scheduler's own paths so a watchdog can say which core stopped and what it was running.
+	std::atomic<uint64> g_diagCoreIdleIterations[Espresso::CORE_COUNT]{};
+	std::atomic<PPCInterpreter_t*> g_diagCoreCurrentPPC[Espresso::CORE_COUNT]{};
 
 	void OSSetCurrentThread(uint32 coreIndex, OSThread_t* thread)
 	{
@@ -1210,6 +1224,7 @@ namespace coreinit
 		thread->totalCycles += (uint64)executedCycles;
 		// store context and set current thread to null
 		__OSThreadStoreContext(hCPU, thread);
+		g_diagCoreCurrentPPC[hCPU->spr.UPIR].store(nullptr, std::memory_order_relaxed);
 		OSSetCurrentThread(OSGetCoreId(), nullptr);
 		PPCInterpreter_setCurrentInstance(nullptr);
 	}
@@ -1222,6 +1237,7 @@ namespace coreinit
 		hCPU->reservedMemValue = 0;
 		hCPU->spr.UPIR = coreIndex;
 		hCPU->coreInterruptMask = 1;
+		g_diagCoreCurrentPPC[coreIndex].store(hCPU, std::memory_order_relaxed);
 		PPCInterpreter_setCurrentInstance(hCPU);
 		OSSetCurrentThread(OSGetCoreId(), thread);
 		__OSThreadLoadContext(hCPU, thread);
@@ -1308,6 +1324,8 @@ namespace coreinit
 		__OSUnlockScheduler();
 		while (true)
 		{
+			g_diagCoreIdleIterations[t_assignedCoreIndex].fetch_add(1, std::memory_order_relaxed);
+
 			// Save state rendezvous. This is the safe point: the scheduler lock is not
 			// held, no PPC instance is current, and any thread that ran on this core had
 			// its context stored to guest memory by __OSStoreThread() before switching
@@ -1564,6 +1582,11 @@ namespace coreinit
 
 	/* save states */
 
+	// Guest stack pointer each active thread had when it entered the HLE call it is blocked
+	// in, indexed in step with activeThread[]. Restored from the state file, consumed by
+	// __OSRestartHLEBlockedThreadsAfterStateLoad().
+	static uint32 s_restoredHleEntrySP[std::size(activeThread)] = {};
+
 	void __OSQuiesceWakeCores()
 	{
 		// Mirrors the wake-up in OSSchedulerEnd(). A core blocked in
@@ -1578,6 +1601,254 @@ namespace coreinit
 		// Undo the artificial run queue counts taken by __OSQuiesceWakeCores()
 		for (size_t i = 0; i < Espresso::CORE_COUNT; i++)
 			g_coreRunQueueThreadCount[i].decrement();
+	}
+
+	// Is this thread executing inside a guest callback invoked from host code?
+	//
+	// PPCCore_executeCallbackInternal() runs a guest function from C++ by installing a stub as
+	// the return address and looping until the guest returns to it. Restarting such a thread is
+	// fatal: _PPCCore_callbackExit sets instructionPointer to 0 to signal "callback finished"
+	// -- it is the only thing in the emulator that writes that value -- and with the host loop
+	// gone the 0 is simply executed.
+	//
+	// The immediate link register is not enough, because a thread can be several guest frames
+	// deep inside a callback (callback -> game function -> OSSleepTicks) and its own frame then
+	// looks entirely ordinary.
+	//
+	// Scanning beats walking the back-chain here. A thread parked inside an HLE call need not
+	// have r1 pointing at a well-formed frame -- Cemu's own stack tracer scores candidate frame
+	// pointers rather than trusting r1 (coreinit.cpp) -- and executeCallbackInternal reserves
+	// its save area without writing a back-chain link, breaking the chain at precisely the
+	// boundary being searched for. Only the live window [sp, stackBase) is scanned; storage
+	// below the stack pointer is dead and can still hold stale stubs from finished callbacks.
+	static const char* __OSThreadStateName(OSThread_t::THREAD_STATE state)
+	{
+		switch (state)
+		{
+		case OSThread_t::THREAD_STATE::STATE_NONE: return "NONE";
+		case OSThread_t::THREAD_STATE::STATE_READY: return "READY";
+		case OSThread_t::THREAD_STATE::STATE_RUNNING: return "RUNNING";
+		case OSThread_t::THREAD_STATE::STATE_WAITING: return "WAITING";
+		case OSThread_t::THREAD_STATE::STATE_MORIBUND: return "MORIBUND";
+		}
+		return "?";
+	}
+
+	// Cemu names its own service threads ("Alarm Thread", "{SYS IPC Core n}", ...), so an
+	// entry-point address is never the best available identification. The name lives in guest
+	// memory and is therefore restored along with everything else.
+	static std::string __OSDescribeThread(OSThread_t* thread)
+	{
+		const char* name = thread->threadName.GetPtr();
+		if (!name && thread == snd_core::AXIst_GetThread())
+			name = "(AX IST)";
+		return fmt::format("{:8} prio {:3} aff {:x} {}",
+						   __OSThreadStateName(thread->state), (sint32)thread->effectivePriority,
+						   thread->attr & 7, name ? name : "<unnamed>");
+	}
+
+	static bool __OSIsThreadInsidePPCCallback(OSThread_t* thread, uint32 lr)
+	{
+		const uint32 callbackStub = PPCCore_getCallbackExitStubAddr();
+		if (callbackStub == 0)
+			return false;
+		if (lr == callbackStub)
+			return true;
+
+		const uint32 stackBase = thread->stackBase.GetMPTR();
+		uint32 sp = _swapEndianU32(thread->context.gpr[1]) & ~3u;
+		if (sp == 0 || stackBase <= sp)
+			return false;
+		const uint32 words = std::min<uint32>((stackBase - sp) / 4u, 64u * 1024u);
+		for (uint32 i = 0; i < words; i++)
+		{
+			const uint32 addr = sp + i * 4;
+			if (!memory_isAddressRangeAccessible(addr, 4))
+				break;
+			if (memory_readU32(addr) == callbackStub)
+				return true;
+		}
+		return false;
+	}
+
+	// Restarts every guest thread that was blocked inside an HLE call.
+	//
+	// See docs/save-states-phase0-findings.md section 6. Cemu is an HLE emulator, so a guest
+	// thread blocked in something like OSWaitEvent has a host C++ call stack parked on its
+	// fiber, and the fiber rebuild necessarily discards it. In a running title essentially
+	// every thread is in that position, which is why a restored world never resumed.
+	//
+	// What survives is better than it sounds. The thread's saved context points at the HLE
+	// opcode itself (srr0), its arguments are still in the GPRs and its return address is in
+	// LR -- all guest memory, all already covered by MEMR. So rather than trying to resume a
+	// continuation that no longer exists, the call is re-invoked from the beginning against
+	// the restored world: it re-checks its guest primitive and either returns immediately or
+	// blocks again, which is exactly the right answer either way.
+	//
+	// The thread must be unlinked from its wait queue first. Re-entering the call would
+	// otherwise queue it a second time on a queue it is already linked into.
+	//
+	// LIMIT: this is only sound for calls that merely wait on a guest primitive (OSWaitEvent,
+	// OSLockMutex, OSReceiveMessage, GX2WaitForVsync, ...). A call that already handed work to
+	// a host subsystem before blocking must not be re-entered -- restarting an IOS_Ioctl would
+	// re-submit the IPC request. Classifying the blocking exports is the outstanding work.
+	void __OSRestartHLEBlockedThreadsAfterStateLoad()
+	{
+		__OSLockScheduler();
+		srwlock_activeThreadList.LockWrite();
+
+		cemuLog_log(LogType::Force, "Save state: callback-exit stub is at {:08x}", PPCCore_getCallbackExitStubAddr());
+
+		sint32 restarted = 0;
+		sint32 skippedNotHLE = 0;
+		sint32 skippedSuspended = 0;
+		sint32 skippedHostThread = 0;
+		const sint32 count = activeThreadCount;
+		for (sint32 i = 0; i < count; i++)
+		{
+			OSThread_t* thread = (OSThread_t*)memory_getPointerFromVirtualOffset(activeThread[i]);
+			if (thread->state != OSThread_t::THREAD_STATE::STATE_WAITING)
+				continue;
+			OSThreadQueueInternal* waitQueue = thread->currentWaitQueue.GetPtr();
+			if (!waitQueue)
+				continue; // waiting but not on a queue (e.g. suspended); nothing to restart
+
+			// Only restart where the saved PC really is an HLE call. Primary opcode 1 is
+			// Cemu's reserved HLE opcode (PPCInterpreterImpl.cpp -> PPCInterpreter_virtualHLE).
+			// Anything else means the thread parked for a reason this cannot undo, and
+			// forcing it runnable would resume guest code at an arbitrary point.
+			const uint32 pc = thread->context.srr0;
+			if (pc == 0 || !memory_isAddressRangeAccessible(pc, 4) || (memory_readU32(pc) >> 26) != 1)
+			{
+				skippedNotHLE++;
+				continue;
+			}
+
+			// Cemu's own service threads must not be restarted. Threads like "Alarm Thread",
+			// "{SYS IPC Core n}", "Callback Thread" and "GX2 event callback" are created by
+			// the emulator with an HLE stub as their entry point: the whole thread body is
+			// host C++, and the guest side is a single opcode. Re-invoking that opcode does
+			// not resume the thread, it runs a second copy of the entire service loop.
+			//
+			// They are identified by their link register still pointing at an HLE stub -- such
+			// a thread has never returned into guest code, so there is no guest call to
+			// restart. A game thread's LR points into a loaded module (and the default
+			// threads, whose entry point is also a stub, correctly pass this test once they
+			// have called into the title).
+			// context.lr is stored big-endian (__OSThreadStoreContext swaps it), unlike
+			// context.srr0 right next to it, which is stored raw. Reading either with the
+			// wrong convention yields an address that is merely plausible enough to pass an
+			// accessibility check, which makes the resulting bug look like bad luck rather
+			// than a byte order mistake.
+			const uint32 lr = _swapEndianU32(thread->context.lr);
+			if (lr == 0 || !memory_isAddressRangeAccessible(lr, 4) || (memory_readU32(lr) >> 26) == 1 ||
+				__OSIsThreadInsidePPCCallback(thread, lr))
+			{
+				skippedHostThread++;
+				cemuLog_log(LogType::Force, "Save state:   skip host thread {:08x} entry {:08x} in {} | {}",
+							activeThread[i], thread->entrypoint.GetMPTR(),
+							PPCInterpreter_getHLEName(memory_readU32(pc) & 0xFFFF),
+							__OSDescribeThread(thread));
+				continue;
+			}
+
+			// A thread whose suspendCounter is set must not be made runnable; cancelWait()
+			// would put it on the run queue via __OSAddReadyThreadToRunQueue(), which checks
+			// this itself, but skipping here keeps the accounting honest.
+			if (thread->suspendCounter != 0)
+			{
+				skippedSuspended++;
+				continue;
+			}
+
+			// Set inside OSLockMutexInternal() before it blocks and cleared after it returns.
+			// The restarted call sets it again; clearing avoids a stale mutex pointer being
+			// visible in between.
+			thread->waitingForMutex = nullptr;
+
+			// Rewind the stack pointer to what it was on entry to this HLE call. Functions
+			// like OSSleepTicks reserve guest-stack scratch with StackAllocator, which moves
+			// gpr[1] down and only restores it on return; the stored value is therefore below
+			// the real one. Restarting with it makes the re-run reserve a second scratch area
+			// and return one short, after which guest code reads its saved link register from
+			// the wrong slot, gets zero, and branches to address zero.
+			if (s_restoredHleEntrySP[i] != 0)
+				thread->context.gpr[1] = _swapEndianU32(s_restoredHleEntrySP[i]);
+
+			cemuLog_log(LogType::Force, "Save state:   restart {:08x} lr {:08x} sp {:08x} stack [{:08x}..{:08x}] in {} | {}",
+						activeThread[i], lr, _swapEndianU32(thread->context.gpr[1]),
+						thread->stackEnd.GetMPTR(), thread->stackBase.GetMPTR(),
+						PPCInterpreter_getHLEName(memory_readU32(pc) & 0xFFFF),
+						__OSDescribeThread(thread));
+
+			waitQueue->cancelWait(thread);
+			restarted++;
+		}
+
+		srwlock_activeThreadList.UnlockWrite();
+		__OSUnlockScheduler();
+
+		cemuLog_log(LogType::Force, "Save state: restarted {} HLE-blocked threads ({} host threads, {} not at an HLE call, {} suspended)",
+					restarted, skippedHostThread, skippedNotHLE, skippedSuspended);
+	}
+
+	// Reports what the scheduler is actually doing some seconds after a state load.
+	//
+	// Deliberately lock-free. The thing being diagnosed is a core that has stopped dispatching,
+	// and such a core may well be holding the scheduler lock -- a diagnostic that blocks on it
+	// would report nothing at all. Everything read here is an atomic or a plain word whose torn
+	// value would still be recognisable.
+	static void __OSLogSchedulerStateAfterStateLoad(const char* tag)
+	{
+		for (size_t i = 0; i < Espresso::CORE_COUNT; i++)
+		{
+			OSThread_t* cur = __currentCoreThread[i];
+			PPCInterpreter_t* hCPU = g_diagCoreCurrentPPC[i].load(std::memory_order_relaxed);
+			const char* checkpoint = SaveStates::g_hostCheckpointLabel[i].load(std::memory_order_relaxed);
+			cemuLog_log(LogType::Force, "Save state watchdog {}: core {} idleLoop {} runq {} host {}/{} current {} ip {:08x} {}",
+						tag, i,
+						g_diagCoreIdleIterations[i].load(std::memory_order_relaxed),
+						g_coreRunQueueThreadCount[i].peekCount(),
+						checkpoint ? checkpoint : "-",
+						SaveStates::g_hostCheckpointSeq[i].load(std::memory_order_relaxed),
+						cur ? fmt::format("{:08x}", MEMPTR<OSThread_t>(cur).GetMPTR()) : std::string("--------"),
+						hCPU ? (uint32)hCPU->instructionPointer : 0u,
+						cur ? __OSDescribeThread(cur) : std::string("(idle)"));
+		}
+	}
+
+	// wakeUpCount is incremented by __OSLoadThread on every timeslice, so comparing it across
+	// passes separates threads that are running from threads that merely look alive. It is the
+	// only measurement that held up -- thread states alone read identically for a healthy game
+	// and a dead one.
+	static void __OSLogThreadTableAfterStateLoad(const char* tag)
+	{
+		const sint32 count = activeThreadCount;
+		for (sint32 i = 0; i < count; i++)
+		{
+			OSThread_t* t = (OSThread_t*)memory_getPointerFromVirtualOffset(activeThread[i]);
+			cemuLog_log(LogType::Force, "Save state watchdog {}:   {:08x} {} susp {} waitq {:08x} wake {} cycles {}",
+						tag, activeThread[i], __OSDescribeThread(t), (sint32)t->suspendCounter,
+						t->currentWaitQueue.GetMPTR(), (uint32)t->wakeUpCount, (uint64)t->totalCycles);
+		}
+	}
+
+	// Started at the end of a state load. The restored world has been seen to render one frame
+	// and then stop, and a stall is only distinguishable from an idle moment by watching it
+	// over several seconds -- so this samples rather than reading once.
+	void __OSStartStallWatchdogAfterStateLoad()
+	{
+		std::thread([]()
+		{
+			SetThreadName("savestate-watchdog");
+			static constexpr std::pair<const char*, sint32> passes[] = { {"[+2s]", 2}, {"[+5s]", 3}, {"[+10s]", 5} };
+			for (const auto& [tag, waitSeconds] : passes)
+			{
+				std::this_thread::sleep_for(std::chrono::seconds(waitSeconds));
+				__OSLogSchedulerStateAfterStateLoad(tag);
+				__OSLogThreadTableAfterStateLoad(tag);
+			}
+		}).detach();
 	}
 
 	// Rebuilds the host-side mirror of the guest run queues after a state load.
@@ -1665,6 +1936,26 @@ namespace coreinit
 			s.Do(activeThread[i]);
 		if (s.IsReading())
 			activeThreadCount = count;
+
+		// The stack pointer each thread entered its current HLE call with. This lives in the
+		// thread's PPCInterpreter_t, which is host state destroyed along with the fiber, so
+		// unlike the rest of a thread's context it is not covered by MEMR and has to be
+		// written out explicitly. Restarting a blocked HLE call without it corrupts the guest
+		// stack (see __OSRestartHLEBlockedThreadsAfterStateLoad).
+		for (sint32 i = 0; i < count; i++)
+		{
+			uint32 entrySP = 0;
+			if (!s.IsReading())
+			{
+				OSThread_t* t = (OSThread_t*)memory_getPointerFromVirtualOffset(activeThread[i]);
+				auto itr = s_threadToFiber.find(t);
+				if (itr != s_threadToFiber.end())
+					entrySP = itr->second->ppcInstance.hleEntryStackPointer;
+			}
+			s.Do(entrySP);
+			if (s.IsReading())
+				s_restoredHleEntrySP[i] = entrySP;
+		}
 		srwlock_activeThreadList.UnlockWrite();
 
 		s.DoMarker(SaveStates::kMarkerCPUS, "coreinit/scheduler-end");

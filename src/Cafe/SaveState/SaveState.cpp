@@ -9,6 +9,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
 #include "Cafe/OS/libs/TCL/TCL.h"
+#include "Cafe/OS/libs/snd_core/ax.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Common/version.h"
 #include "Cemu/Logging/CemuLogging.h"
@@ -155,6 +156,11 @@ namespace SaveStates
 		// before the host thread rebuild, which frees the fiber stacks that some
 		// transient alarms point into.
 		coreinit::AlarmDoState(s);
+		if (s.HasError())
+			return;
+		// AX voice allocation. Host state that describes guest voices and cannot be derived
+		// from guest memory, so it has to travel in the state file like the alarms do.
+		snd_core::AXVoiceDoState(s);
 		if (s.HasError())
 			return;
 		// Host-side GPU command ring cursors. Guest submission bookkeeping is covered by
@@ -321,6 +327,11 @@ namespace SaveStates
 
 			// Host residue that is rebuilt rather than serialized.
 			coreinit::__OSRebuildHostThreadsAfterStateLoad();
+			// Threads blocked inside an HLE call cannot resume the host continuation the
+			// fiber rebuild just discarded, so they are restarted at the call instead.
+			// Must run before the run queue counts are rebuilt: this is what puts threads
+			// back on the run queues that those counts are derived from.
+			coreinit::__OSRestartHLEBlockedThreadsAfterStateLoad();
 			// Must happen before the scope releases the cores: they consult these counters
 			// the moment they leave the barrier, and a stale count means they go straight
 			// back to sleep with a full run queue.
@@ -340,6 +351,9 @@ namespace SaveStates
 
 		cemuLog_log(LogType::Force, "Save state: restored {} MiB of guest state, rebuilt host threads",
 					body.size() / (1024 * 1024));
+		// The restored world resumes, renders, and then stops. Started after the cores are
+		// released so it observes the world actually running rather than the barrier.
+		coreinit::__OSStartStallWatchdogAfterStateLoad();
 		return OperationResult::Ok();
 	}
 } // namespace SaveStates

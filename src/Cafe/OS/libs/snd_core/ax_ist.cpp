@@ -4,6 +4,7 @@
 #include "Cafe/HW/Espresso/PPCCallback.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/OS/libs/coreinit/coreinit_MessageQueue.h"
+#include "Cafe/SaveState/HostCheckpoint.h"
 
 namespace snd_core
 {
@@ -794,7 +795,9 @@ namespace snd_core
 
 	void AXIst_SyncVPB(AXVPBInternal_t** lastProcessedDSPShadowCopy, AXVPBInternal_t** lastProcessedPPCShadowCopy)
 	{
+		SaveStates::MarkHostCheckpoint("ax:sync.lock");
 		__AXVoiceListSpinlock.lock();
+		SaveStates::MarkHostCheckpoint("ax:sync.walk");
 
 		AXVPBInternal_t* previousInternalDSP = nullptr;
 		AXVPBInternal_t* previousInternalPPC = nullptr;
@@ -848,6 +851,7 @@ namespace snd_core
 			}
 		}
 		// depop and reset voices which just stopped playing
+		SaveStates::MarkHostCheckpoint("ax:sync.free");
 		auto& freeVoicesArray = AXVoiceList_GetFreeVoices();
 		for(auto vpb : freeVoicesArray)
 		{
@@ -885,6 +889,7 @@ namespace snd_core
 			else
 				*lastProcessedPPCShadowCopy = nullptr;
 		}
+		SaveStates::MarkHostCheckpoint("ax:sync.unlock");
 		__AXVoiceListSpinlock.unlock();
 	}
 
@@ -999,15 +1004,19 @@ namespace snd_core
 		AXVPBInternal_t* internalShadowCopyDSPHead = nullptr;
 		AXVPBInternal_t* internalShadowCopyPPCHead = nullptr;
 
+		SaveStates::MarkHostCheckpoint("ax:sync");
 		AXIst_SyncVPB(&internalShadowCopyDSPHead, &internalShadowCopyPPCHead);
 
 		if (internalShadowCopyDSPHead)
 			assert_dbg();
 
+		SaveStates::MarkHostCheckpoint("ax:mix");
 		AXMix_process(internalShadowCopyPPCHead);
 
 		AXOut_ResetFinalMixCBData();
+		SaveStates::MarkHostCheckpoint("ax:finalmix");
 		AXIst_ProcessFinalMixCallback();
+		SaveStates::MarkHostCheckpoint("ax:remix");
 		AXIst_HandleDeviceRemix();
 
 		// todo - additional phases. See unimplemented API:
@@ -1015,9 +1024,12 @@ namespace snd_core
 		// AXSetDeviceCompressor
 		// AXRegisterPostFinalMixCallback
 
+		SaveStates::MarkHostCheckpoint("ax:submitTV");
 		AXOut_SubmitTVFrame(0);
+		SaveStates::MarkHostCheckpoint("ax:submitDRC");
 		AXOut_SubmitDRCFrame(0);
 
+		SaveStates::MarkHostCheckpoint("ax:frameDone");
 		__AXIstIsProcessingFrame.store(false);
 	}
 
@@ -1026,7 +1038,9 @@ namespace snd_core
 		while (true)
 		{
 			StackAllocator<coreinit::OSMessage, 1> msg;
+			SaveStates::MarkHostCheckpoint("ax:recv");
 			OSReceiveMessage(__AXIstThreadMsgQueue.GetPtr(), msg.GetPointer(), OS_MESSAGE_BLOCK);
+			SaveStates::MarkHostCheckpoint("ax:gotMsg");
 			if (msg.GetPointer()->message == 2)
 			{
 				cemuLog_logDebug(LogType::Force, "Shut down of AX thread requested");

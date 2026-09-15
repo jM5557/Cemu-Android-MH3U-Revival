@@ -1,4 +1,6 @@
 #include "Cafe/SaveState/Quiesce.h"
+#include "Cafe/SaveState/HostCheckpoint.h"
+#include "Cafe/HW/Espresso/PPCState.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "Cafe/OS/libs/TCL/TCL.h"
 #include "Cemu/Logging/CemuLogging.h"
@@ -15,6 +17,18 @@ void Latte_DropCachesForStateLoad();
 
 namespace SaveStates
 {
+	void MarkHostCheckpoint(const char* label)
+	{
+		PPCInterpreter_t* hCPU = PPCInterpreter_getCurrentInstance();
+		if (!hCPU)
+			return;
+		const uint32 coreIndex = hCPU->spr.UPIR;
+		if (coreIndex >= 3)
+			return;
+		g_hostCheckpointLabel[coreIndex].store(label, std::memory_order_relaxed);
+		g_hostCheckpointSeq[coreIndex].fetch_add(1, std::memory_order_relaxed);
+	}
+
 	static std::atomic<bool> s_quiesceRequested{false};
 	static std::atomic<bool> s_scopeActive{false};
 	static std::mutex s_barrierMutex;

@@ -883,6 +883,10 @@ void* PPCRecompiler_virtualHLE(PPCInterpreter_t* ppcInterpreter, uint32 hleFuncI
 	{
 		auto hleCall = PPCInterpreter_getHLECall(hleFuncId);
 		cemu_assert(hleCall != nullptr);
+		// Mirrors the capture in PPCInterpreter_virtualHLE. The recompiler dispatches HLE
+		// calls directly, so a hook placed only in the interpreter never runs for a
+		// recompiled title. See PPCInterpreter_t::hleEntryStackPointer.
+		ppcInterpreter->hleEntryStackPointer = ppcInterpreter->gpr[1];
 		hleCall(ppcInterpreter);
 	}
 	ppcInterpreter->rspTemp = prevRSPTemp;

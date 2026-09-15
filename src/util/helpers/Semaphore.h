@@ -117,6 +117,13 @@ public:
 		return m_count == 0;
 	}
 
+	// Unsynchronized read, for diagnostics only. Same hazard as isZero() above: the value may
+	// be stale by the time it is used, which is acceptable when it is only being printed.
+	sint64 peekCount() const
+	{
+		return m_count;
+	}
+
 private:
 	std::mutex m_mutex;
 	std::condition_variable m_condition;

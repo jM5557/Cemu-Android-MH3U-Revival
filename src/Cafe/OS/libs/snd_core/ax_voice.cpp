@@ -5,6 +5,7 @@
 #include "Cafe/OS/libs/snd_core/ax_internal.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Thread.h"
 #include "util/helpers/fspinlock.h"
+#include "Cafe/SaveState/StateStream.h"
 
 namespace snd_core
 {
@@ -510,6 +511,72 @@ namespace snd_core
         AXVoiceList_Reset();
         __AXVPBResetVoices();
     }
+
+	// Which voices are allocated, at what priority, and which are free.
+	//
+	// This is host state that describes guest objects, and it is the only copy: the guest
+	// AXVPB array lives in guest memory and is restored with it, but nothing in that array
+	// separates a free voice from an allocated one -- AXFreeVoice() leaves vpb->priority at
+	// its last value, so the lists cannot be rebuilt from guest memory the way fibers and run
+	// queue counts can. Left stale across a load, the host lists and the restored guest world
+	// disagree about which voices exist, and a voice can end up in two lists at once; the
+	// per-frame chain AXIst_SyncVPB() builds from them then closes into a cycle and
+	// AXMix_ProcessVoices() walks it forever, holding a core and stopping the whole machine.
+	//
+	// Voices are stored as indices rather than pointers so the data means the same thing in
+	// another process.
+	void AXVoiceDoState(SaveStates::StateStream& s)
+	{
+		s.DoMarker(SaveStates::kMarkerSNDV, "snd_core/voices");
+
+		std::vector<uint32> indices;
+		auto doVoiceList = [&](std::vector<AXVPB*>& list)
+		{
+			if (!s.IsReading())
+			{
+				indices.clear();
+				indices.reserve(list.size());
+				for (AXVPB* vpb : list)
+					indices.emplace_back((uint32)(vpb - __AXVPBArrayPtr));
+			}
+			s.DoPODVector(indices);
+			if (!s.IsReading() || s.HasError())
+				return;
+			list.clear();
+			if (!__AXVPBArrayPtr)
+				return; // AX never initialized in this session; nothing to point at
+			for (uint32 index : indices)
+			{
+				if (index >= AX_MAX_VOICES)
+				{
+					s.SetError("AX voice index out of range");
+					return;
+				}
+				list.emplace_back(__AXVPBArrayPtr + index);
+			}
+		};
+
+		__AXVoiceListSpinlock.lock();
+		for (uint32 priority = 0; priority < AX_PRIORITY_MAX; priority++)
+			doVoiceList(__AXVoicesPerPriority[priority]);
+		doVoiceList(__AXFreeVoices);
+
+		// Voice protection is keyed by guest thread address, which restores meaningfully,
+		// but the counts are host side and would otherwise stay at whatever the loading
+		// session had reached.
+		s.Do(__AXUserProtectionArraySize);
+		for (uint32 i = 0; i < AX_MAX_VOICES; i++)
+		{
+			s.Do(__AXUserProtectionArray[i].threadMPTR);
+			s.Do(__AXUserProtectionArray[i].count);
+			s.Do(__AXVoiceProtection[i].threadMPTR);
+			s.Do(__AXVoiceProtection[i].count);
+		}
+		__AXVoiceListSpinlock.unlock();
+
+		if (s.IsReading() && __AXUserProtectionArraySize > AX_MAX_VOICES)
+			s.SetError("AX user protection array size out of range");
+	}
 
 	sint32 AXIsValidDevice(sint32 device, sint32 deviceIndex)
 	{

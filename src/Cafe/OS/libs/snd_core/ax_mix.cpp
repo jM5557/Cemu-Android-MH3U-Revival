@@ -812,8 +812,19 @@ namespace snd_core
 		AXVPBInternal_t* internalVoice = firstVoice;
 		cemu_assert_debug(sndGeneric.initParam.frameLength == 0);
 		float tmpSampleBuffer[AX_SAMPLES_MAX];
+		// The chain is rebuilt from the voice lists every frame and cannot legitimately be
+		// longer than the voice array. Bounding it matters because this loop runs on an
+		// emulated core inside a host function: a cycle here never reaches a scheduler
+		// boundary, so it holds its core forever and takes the whole emulator with it, with
+		// nothing in guest state to show why. Better to drop a frame of audio and say so.
+		sint32 remainingVoices = AX_MAX_VOICES;
 		while (internalVoice)
 		{
+			if (remainingVoices-- <= 0)
+			{
+				cemuLog_log(LogType::Force, "AXMix: voice chain is cyclic, dropping the rest of the frame");
+				break;
+			}
 			AXVoiceMix_DecodeSamples(internalVoice, tmpSampleBuffer, sampleCount);
 			AXVoiceMix_ApplyADSR(internalVoice, tmpSampleBuffer, sampleCount);
 			AXVoiceMix_ApplyBiquad(internalVoice, tmpSampleBuffer, sampleCount);

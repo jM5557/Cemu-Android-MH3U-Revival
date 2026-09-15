@@ -167,6 +167,10 @@ void* ATTR_MS_ABI PPCRecompiler_virtualHLE(PPCInterpreter_t* hCPU, uint32 hleFun
 	{
 		auto hleCall = PPCInterpreter_getHLECall(hleFuncId);
 		cemu_assert(hleCall != nullptr);
+		// Mirrors the capture in PPCInterpreter_virtualHLE. The recompiler dispatches HLE
+		// calls directly, so a hook placed only in the interpreter never runs for a
+		// recompiled title. See PPCInterpreter_t::hleEntryStackPointer.
+		hCPU->hleEntryStackPointer = hCPU->gpr[1];
 		hleCall(hCPU);
 	}
 	hCPU->rspTemp = prevRSPTemp;
