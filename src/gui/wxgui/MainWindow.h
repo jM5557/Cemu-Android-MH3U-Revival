@@ -109,6 +109,7 @@ public:
 	void OnSaveStateToFile(wxCommandEvent& event);
 	void OnLoadStateFromFile(wxCommandEvent& event);
 	void OnOpenSaveStateFolder(wxCommandEvent& event);
+	void OnUndoLoadState(wxCommandEvent& event);
 	void OnNFCMenu(wxCommandEvent& event);
 	void OnOptionsInput(wxCommandEvent& event);
 	void OnAccountSelect(wxCommandEvent& event);

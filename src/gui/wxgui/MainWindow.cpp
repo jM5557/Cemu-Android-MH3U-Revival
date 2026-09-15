@@ -150,6 +150,7 @@ enum
 	MAINFRAME_MENU_ID_FILE_SAVE_STATE_TO_FILE = 20860,
 	MAINFRAME_MENU_ID_FILE_LOAD_STATE_FROM_FILE,
 	MAINFRAME_MENU_ID_FILE_OPEN_SAVESTATE_FOLDER,
+	MAINFRAME_MENU_ID_FILE_UNDO_LOAD_STATE,
 
 	// nfc->Touch NFC file
 	MAINFRAME_MENU_ID_NFC_TOUCH_NFC_FILE = 21000,
@@ -213,6 +214,7 @@ EVT_MENU_RANGE(MAINFRAME_MENU_ID_FILE_DELETE_STATE_SLOT_0, MAINFRAME_MENU_ID_FIL
 EVT_MENU(MAINFRAME_MENU_ID_FILE_SAVE_STATE_TO_FILE, MainWindow::OnSaveStateToFile)
 EVT_MENU(MAINFRAME_MENU_ID_FILE_LOAD_STATE_FROM_FILE, MainWindow::OnLoadStateFromFile)
 EVT_MENU(MAINFRAME_MENU_ID_FILE_OPEN_SAVESTATE_FOLDER, MainWindow::OnOpenSaveStateFolder)
+EVT_MENU(MAINFRAME_MENU_ID_FILE_UNDO_LOAD_STATE, MainWindow::OnUndoLoadState)
 EVT_MENU_RANGE(MAINFRAME_MENU_ID_FILE_RECENT_0 + 0, MAINFRAME_MENU_ID_FILE_RECENT_LAST, MainWindow::OnFileMenu)
 // options -> region menu
 EVT_MENU_RANGE(MAINFRAME_MENU_ID_OPTIONS_ACCOUNT_1, MAINFRAME_MENU_ID_OPTIONS_ACCOUNT_12, MainWindow::OnAccountSelect)
@@ -855,6 +857,8 @@ void MainWindow::LoadStateFromSlot(uint32 slot)
 	const SaveStates::OperationResult result = SaveStates::LoadFromFile(path);
 	if (!result.success)
 		wxMessageBox(wxString::FromUTF8(result.message), _("Load state failed"), wxOK | wxICON_ERROR, this);
+	// Whether there is anything to undo to has just changed.
+	CallAfter([this]() { RecreateMenu(); });
 }
 
 // Slot 0 is what the plain save/load commands act on, so the existing menu entries and
@@ -926,6 +930,18 @@ void MainWindow::OnLoadStateFromFile(wxCommandEvent& event)
 	const SaveStates::OperationResult result = SaveStates::LoadFromFile(_utf8ToPath(dialog.GetPath().utf8_string()));
 	if (!result.success)
 		wxMessageBox(wxString::FromUTF8(result.message), _("Load state failed"), wxOK | wxICON_ERROR, this);
+	CallAfter([this]() { RecreateMenu(); });
+}
+
+// Undo is itself a load, so it captures its own undo snapshot on the way through and the
+// action toggles. The menu has to be rebuilt afterwards either way, since whether there is
+// anything to undo to has just changed.
+void MainWindow::OnUndoLoadState(wxCommandEvent& event)
+{
+	const SaveStates::OperationResult result = SaveStates::UndoLoadState();
+	if (!result.success)
+		wxMessageBox(wxString::FromUTF8(result.message), _("Undo load state failed"), wxOK | wxICON_ERROR, this);
+	CallAfter([this]() { RecreateMenu(); });
 }
 
 void MainWindow::OnOpenSaveStateFolder(wxCommandEvent& event)
@@ -2369,6 +2385,8 @@ void MainWindow::RecreateMenu()
 		saveStateMenu->Append(MAINFRAME_MENU_ID_FILE_SAVE_STATE_TO_FILE, _("To file..."));
 		loadStateMenu->AppendSeparator();
 		loadStateMenu->Append(MAINFRAME_MENU_ID_FILE_LOAD_STATE_FROM_FILE, _("From file..."));
+		wxMenuItem* undoItem = loadStateMenu->Append(MAINFRAME_MENU_ID_FILE_UNDO_LOAD_STATE, _("Undo load state"));
+		undoItem->Enable(SaveStates::HasUndoState());
 
 		m_fileMenu->AppendSubMenu(saveStateMenu, _("Save state to"));
 		m_fileMenu->AppendSubMenu(loadStateMenu, _("Load state from"));

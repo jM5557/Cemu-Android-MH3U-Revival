@@ -336,6 +336,8 @@ namespace SaveStates
 		return info;
 	}
 
+	static OperationResult ApplyStateBody(std::vector<uint8>& body);
+
 	OperationResult LoadFromFile(const fs::path& path)
 	{
 		std::ifstream file(path, std::ios::binary);
@@ -365,19 +367,68 @@ namespace SaveStates
 		if (decompressedSize != body.size())
 			return OperationResult::Fail("State body size mismatch");
 
+		return ApplyStateBody(body);
+	}
+
+	// The session as it was immediately before the most recent load.
+	//
+	// Kept uncompressed and never written to disk: it exists to undo an accident within the
+	// same session, which is the only window in which the live session it describes is still
+	// the one you want back.
+	static std::vector<uint8> s_undoBody;
+	static StateFingerprint s_undoFingerprint;
+
+	bool HasUndoState()
+	{
+		return !s_undoBody.empty();
+	}
+
+	void DiscardUndoState()
+	{
+		s_undoBody.clear();
+		s_undoBody.shrink_to_fit();
+	}
+
+	// Applies an already-decompressed, already-fingerprint-checked body.
+	//
+	// The undo snapshot is taken inside this same quiesce rather than as a separate pass.
+	// The world is stopped either way, so the extra cost is one capture into memory instead
+	// of a second stop-the-world -- and taking it here is also the only way to be sure the
+	// snapshot describes exactly the world this load is about to replace.
+	static OperationResult ApplyStateBody(std::vector<uint8>& body)
+	{
 		{
 			QuiesceScope quiesce;
 			if (!quiesce.IsHeld())
 				return OperationResult::Fail(GetQuiesceStatusMessage(quiesce.GetStatus()));
 
+			std::vector<uint8> undoBody;
+			undoBody.reserve(64 * 1024 * 1024);
+			StateStream undoStream = StateStream::MakeWriter(undoBody);
+			DoStateBody(undoStream);
+			// A failed snapshot is not a reason to refuse the load the user asked for, but
+			// it does mean there is nothing to undo to, and silently keeping a stale one
+			// would be worse than having none.
+			const bool undoCaptured = !undoStream.HasError();
+			if (!undoCaptured)
+				cemuLog_log(LogType::Force, "Save state: could not capture undo snapshot: {}", undoStream.GetError());
+
 			StateStream stream = StateStream::MakeReader(body);
 			DoStateBody(stream);
 			if (stream.HasError())
 			{
-				// Guest memory is now partially overwritten and there is no way back
-				// without a backup state (phase 2 "undo load state").
+				// Guest memory is partially overwritten at this point. The snapshot taken
+				// above is the way back, so keep it even though the load failed.
+				if (undoCaptured)
+				{
+					s_undoBody = std::move(undoBody);
+					s_undoFingerprint = BuildCurrentFingerprint();
+				}
 				return OperationResult::Fail(fmt::format("State load failed after modifying memory: {}", stream.GetError()));
 			}
+			s_undoBody = undoCaptured ? std::move(undoBody) : std::vector<uint8>{};
+			if (undoCaptured)
+				s_undoFingerprint = BuildCurrentFingerprint();
 
 			// Host residue that is rebuilt rather than serialized.
 			coreinit::__OSRebuildHostThreadsAfterStateLoad();
@@ -405,9 +456,31 @@ namespace SaveStates
 
 		cemuLog_log(LogType::Force, "Save state: restored {} MiB of guest state, rebuilt host threads",
 					body.size() / (1024 * 1024));
-		// The restored world resumes, renders, and then stops. Started after the cores are
-		// released so it observes the world actually running rather than the barrier.
+		// Started after the cores are released so it observes the world actually running
+		// rather than the barrier.
 		coreinit::__OSStartStallWatchdogAfterStateLoad();
 		return OperationResult::Ok();
+	}
+
+	// Restores the session the last load replaced, and keeps what it just replaced in turn,
+	// so undo toggles rather than being a one-shot. ApplyStateBody() does the second half by
+	// snapshotting before it applies anything; the swap below only has to avoid handing it
+	// the buffer it is about to overwrite.
+	OperationResult UndoLoadState()
+	{
+		if (s_undoBody.empty())
+			return OperationResult::Fail("There is no state to undo to");
+		// The snapshot describes the world that was running when it was taken. Closing a
+		// title and starting another leaves it behind, and applying it then would drop one
+		// game's memory into another.
+		const std::string incompatibility = s_undoFingerprint.GetIncompatibilityReason(BuildCurrentFingerprint());
+		if (!incompatibility.empty())
+		{
+			DiscardUndoState();
+			return OperationResult::Fail(incompatibility);
+		}
+		std::vector<uint8> body;
+		body.swap(s_undoBody);
+		return ApplyStateBody(body);
 	}
 } // namespace SaveStates

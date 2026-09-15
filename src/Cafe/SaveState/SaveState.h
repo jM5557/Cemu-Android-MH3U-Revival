@@ -29,6 +29,15 @@ namespace SaveStates
 	// stopped, so a rejected state leaves the running game untouched.
 	OperationResult LoadFromFile(const fs::path& path);
 
+	// Restores the session as it was immediately before the most recent load.
+	//
+	// A load is otherwise irreversible: it overwrites the live session, and anything that
+	// had not been captured goes with it. Loading a known-good state again does not bring
+	// that back. The snapshot is held in memory only, so it does not survive Cemu closing.
+	OperationResult UndoLoadState();
+	bool HasUndoState();
+	void DiscardUndoState();
+
 	// Fingerprint of the currently running world, for UI and for gating loads.
 	StateFingerprint BuildCurrentFingerprint();
 
