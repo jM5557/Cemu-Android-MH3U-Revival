@@ -270,20 +270,44 @@ snapshot is necessary and nowhere near sufficient. `save-states-hle-restart-audi
 
 ## 3.5 Tracking next
 
-**Undo load state.** A load is destructive and irreversible: it overwrites the live session,
-and whatever had not been saved is gone. Loading a good slot again does not recover it. Worse,
-when a load leaves a core spinning in host C++, a second load cannot even be attempted --
-`QuiesceScope` waits 2000 ms for every core to reach the rendezvous, and a core that never
-returns to the idle loop never gets there, so the load times out and fails. There was no way
-out of the AX stall except killing Cemu.
+**Done 2026-09-14, after this was first written:** undo load state. The snapshot is taken
+inside the load's own quiesce (the world is already stopped and `DoStateBody` is already
+running, so the marginal cost is one capture rather than a second stop-the-world), kept even
+when a load fails partway through the body, fingerprint-checked so a stale snapshot cannot be
+dropped into a different title, and held in memory only. Undo is itself a load, so it snapshots
+on the way through and the action toggles.
 
-Design note for whoever picks it up: capture the undo body **inside the load's existing
-quiesce** rather than as a separate pass. The world is already stopped and the body is already
-being assembled, so the marginal cost is one memcpy instead of a second stop-the-world. Hold it
-uncompressed in memory; it never needs to reach disk.
+**Next: make the fingerprint pin what actually matters.**
+
+A Cemu state is locked to one *build*, and more strictly than a Dolphin state is locked to a
+Dolphin version. Dolphin only has to version its serialization format, because a Wii state is
+console state and contains no host-derived values. Cemu is HLE, so host-derived values are baked
+into guest memory:
+
+- **HLE call indices.** `PPCInterpreter_registerHLECall` assigns them in registration order, and
+  they live inside the opcode-1 instruction words patched into guest RPL code. Add an export or
+  reorder a library and a saved state's memory is full of calls naming different functions.
+- **`SysAllocator` placement**, assigned by static-init order.
+- **`RPLLoader_MakePPCCallable` stub addresses**, which is what every service thread's entry
+  point is.
+
+None of that is detectable after the fact: the state loads and the game does something insane.
+
+`StateFingerprint` already gates on the build -- but via `BUILD_VERSION_STRING`, which for a dev
+build is the git hash. That does not change across rebuilds with uncommitted changes, and five
+different binaries carried `bb31c2cf` in one evening. The proxy failed in practice; it is why the
+format version had to be bumped mid-session to stop a stale state getting past the header and
+dying inside `MEMR`.
+
+The fix is to hash the HLE call table -- its length plus the registered names in order -- into
+the fingerprint. The names are retained now (`s_ppcHleNames`, added for the restart logs). That
+catches the real incompatibility, catches it across rebuilds of one git hash, and as a bonus
+lets states survive rebuilds that do not touch the table, which is most of them. Keep the format
+version as well; it is cheap and catches chunk-layout churn. `SysAllocator` layout is a
+second-order candidate after that.
 
 Also still open: the known-unfixed list in §8, and a dedicated save state manager window (the
-slot submenus cover picking, deleting and to/from file today).
+slot submenus cover picking, deleting, to/from file and undo today).
 
 ---
 
