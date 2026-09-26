@@ -4,6 +4,7 @@
 #include "wxCemuConfig.h"
 #include "util/helpers/helpers.h"
 #include "wxgui/GameProfileWindow.h"
+#include "wxgui/CheatsWindow.h"
 
 #include <numeric>
 
@@ -623,6 +624,7 @@ enum ContextMenuEntries
 	kContextMenuDLCFolder,
 	kContextMenuEditGraphicPacks,
 	kContextMenuEditGameProfile,
+	kContextMenuEditCheats,
 
 	kContextMenuRemoveCache,
 
@@ -675,6 +677,7 @@ void wxGameList::OnContextMenu(wxContextMenuEvent& event)
 			menu.AppendSeparator();
 			menu.Append(kContextMenuEditGraphicPacks, _("&Edit graphic packs"));
 			menu.Append(kContextMenuEditGameProfile, _("&Edit game profile"));
+			menu.Append(kContextMenuEditCheats, _("C&heats"));
 
             menu.AppendSeparator();
             menu.Append(kContextMenuCreateShortcut, _("&Create shortcut"));
@@ -799,6 +802,11 @@ void wxGameList::OnContextMenuSelected(wxCommandEvent& event)
 			case kContextMenuEditGameProfile:
 			{
 				(new GameProfileWindow(GetParent(), title_id))->Show();
+				break;
+			}
+			case kContextMenuEditCheats:
+			{
+				(new CheatsWindow(GetParent(), title_id, wxString::FromUTF8(GetNameByTitleId(title_id))))->Show();
 				break;
 			}
             case kContextMenuCreateShortcut:

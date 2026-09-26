@@ -8,6 +8,7 @@
 
 #include "wxgui/GameUpdateWindow.h"
 #include "wxgui/PadViewFrame.h"
+#include "wxgui/CheatsWindow.h"
 #include "wxgui/windows/TextureRelationViewer/TextureRelationWindow.h"
 #include "wxgui/windows/PPCThreadsViewer/DebugPPCThreadsWindow.h"
 #include "AudioDebuggerWindow.h"
@@ -125,6 +126,7 @@ enum
 	MAINFRAME_MENU_ID_TOOLS_TITLE_MANAGER,
 	MAINFRAME_MENU_ID_TOOLS_DOWNLOAD_MANAGER,
 	MAINFRAME_MENU_ID_TOOLS_EMULATED_USB_DEVICES,
+	MAINFRAME_MENU_ID_TOOLS_CHEATS,
 	// cpu
 	// cpu->timer speed
 	MAINFRAME_MENU_ID_TIMER_SPEED_1X = 20700,
@@ -209,6 +211,7 @@ EVT_MENU(MAINFRAME_MENU_ID_TOOLS_MEMORY_SEARCHER, MainWindow::OnToolsInput)
 EVT_MENU(MAINFRAME_MENU_ID_TOOLS_TITLE_MANAGER, MainWindow::OnToolsInput)
 EVT_MENU(MAINFRAME_MENU_ID_TOOLS_DOWNLOAD_MANAGER, MainWindow::OnToolsInput)
 EVT_MENU(MAINFRAME_MENU_ID_TOOLS_EMULATED_USB_DEVICES, MainWindow::OnToolsInput)
+EVT_MENU(MAINFRAME_MENU_ID_TOOLS_CHEATS, MainWindow::OnToolsInput)
 // cpu menu
 EVT_MENU(MAINFRAME_MENU_ID_TIMER_SPEED_8X, MainWindow::OnDebugSetting)
 EVT_MENU(MAINFRAME_MENU_ID_TIMER_SPEED_4X, MainWindow::OnDebugSetting)
@@ -593,6 +596,7 @@ bool MainWindow::FileLoad(const fs::path launchPath, wxLaunchGameEvent::INITIATE
 	m_loadMenuItem->Enable(false);
 	m_installUpdateMenuItem->Enable(false);
 	m_memorySearcherMenuItem->Enable(true);
+	m_cheatsMenuItem->Enable(true);
 
 	m_launched_game_name = CafeSystem::GetForegroundTitleName();
 	#ifdef ENABLE_DISCORD_RPC
@@ -1515,6 +1519,14 @@ void MainWindow::OnToolsInput(wxCommandEvent& event)
 		}
 		break;
 	}
+	case MAINFRAME_MENU_ID_TOOLS_CHEATS:
+	{
+		// cheats for the running game; for any other game use the game list's right-click menu
+		if (!m_game_launched)
+			break;
+		(new CheatsWindow(this, CafeSystem::GetForegroundTitleId(), wxString::FromUTF8(m_launched_game_name)))->Show();
+		break;
+	}
 	case MAINFRAME_MENU_ID_TOOLS_TITLE_MANAGER:
 	case MAINFRAME_MENU_ID_TOOLS_DOWNLOAD_MANAGER:
 	{
@@ -2258,6 +2270,8 @@ void MainWindow::RecreateMenu()
 	wxMenu* toolsMenu = new wxMenu();
 	m_memorySearcherMenuItem = toolsMenu->Append(MAINFRAME_MENU_ID_TOOLS_MEMORY_SEARCHER, _("&Memory searcher"));
 	m_memorySearcherMenuItem->Enable(false);
+	m_cheatsMenuItem = toolsMenu->Append(MAINFRAME_MENU_ID_TOOLS_CHEATS, _("C&heats"));
+	m_cheatsMenuItem->Enable(false);
 	toolsMenu->Append(MAINFRAME_MENU_ID_TOOLS_TITLE_MANAGER, _("&Title Manager"));
 	toolsMenu->Append(MAINFRAME_MENU_ID_TOOLS_DOWNLOAD_MANAGER, _("&Download Manager"));
 	toolsMenu->Append(MAINFRAME_MENU_ID_TOOLS_EMULATED_USB_DEVICES, _("&Emulated USB Devices"));
@@ -2394,6 +2408,7 @@ void MainWindow::RecreateMenu()
 			m_check_update_menu->Enable(false);
 
 		m_memorySearcherMenuItem->Enable(true);
+		m_cheatsMenuItem->Enable(true);
 		m_nfcMenu->Enable(MAINFRAME_MENU_ID_NFC_TOUCH_NFC_FILE, true);
 
 		// these options cant be toggled after the renderer backend is initialized:

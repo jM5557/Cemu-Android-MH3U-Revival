@@ -8,6 +8,8 @@ add_library(CemuWxGui STATIC
   CemuApp.h
   CemuUpdateWindow.cpp
   CemuUpdateWindow.h
+  CheatsWindow.cpp
+  CheatsWindow.h
   ChecksumTool.cpp
   ChecksumTool.h
   components/TextList.cpp

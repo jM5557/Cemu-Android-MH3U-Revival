@@ -57,6 +57,7 @@ import androidx.lifecycle.viewmodel.MutableCreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
 import info.cemu.cemu.R
 import info.cemu.cemu.common.settings.GamePadPosition
+import info.cemu.cemu.common.cheats.CheatsDialog
 import info.cemu.cemu.common.settings.HotkeyAction
 import info.cemu.cemu.common.ui.extensions.showMessage
 import info.cemu.cemu.common.ui.localization.tr
@@ -67,6 +68,7 @@ import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView.InputMode.DEFAULT
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView.InputMode.EDIT_POSITION
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView.InputMode.EDIT_SIZE
+import info.cemu.cemu.nativeinterface.NativeCheats
 import info.cemu.cemu.nativeinterface.NativeEmulation
 import kotlinx.coroutines.launch
 
@@ -87,6 +89,7 @@ fun EmulationScreen(
     var showQuitConfirmationDialog by remember { mutableStateOf(false) }
     var inputOverlayInputMode by rememberSaveable { mutableStateOf(DEFAULT) }
     var showEmulatedUSBDevices by remember { mutableStateOf(false) }
+    var cheatsTitleId by remember { mutableStateOf<Long?>(null) }
 
     val emulationError by viewModel.emulationError.collectAsState()
     val isEmulationInitialized by viewModel.isEmulationInitialized.collectAsState()
@@ -172,6 +175,11 @@ fun EmulationScreen(
                             showEmulatedUSBDevices = true
                             closeDrawer()
                         },
+                        onShowCheats = {
+                            // 0 means nothing is running yet (still booting); there is no list to show
+                            cheatsTitleId = NativeCheats.getRunningTitleId().takeIf { it != 0L }
+                            closeDrawer()
+                        },
                     )
                 }
             }
@@ -241,6 +249,13 @@ fun EmulationScreen(
         )
     }
 
+    cheatsTitleId?.let { titleId ->
+        CheatsDialog(
+            titleId = titleId,
+            onDismiss = { cheatsTitleId = null },
+        )
+    }
+
     EmulationTextInputDialog()
 }
 
@@ -287,6 +302,7 @@ private fun EmulationSideMenuContent(
     sideMenuState: SideMenuState,
     updateState: (SideMenuState) -> Unit,
     onShowEmulatedUSBDevices: () -> Unit,
+    onShowCheats: () -> Unit,
     onEditInputOverlay: () -> Unit,
     onResetInputOverlay: () -> Unit,
     onQuit: () -> Unit,
@@ -312,6 +328,11 @@ private fun EmulationSideMenuContent(
     TextButtonItem(
         label = tr("Emulated USB Devices"),
         onClick = onShowEmulatedUSBDevices,
+    )
+
+    TextButtonItem(
+        label = tr("Cheats"),
+        onClick = onShowCheats,
     )
 
     CheckboxItem(

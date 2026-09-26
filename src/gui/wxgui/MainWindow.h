@@ -225,6 +225,7 @@ private:
 
 	// tools
 	wxMenuItem* m_memorySearcherMenuItem{};
+	wxMenuItem* m_cheatsMenuItem{};
 
 	// cpu
 	wxMenu* m_cpuTimerSubmenu{};

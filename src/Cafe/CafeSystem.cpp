@@ -12,6 +12,7 @@
 #include "config/LaunchSettings.h"
 #include "Cafe/TitleList/GameInfo.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
+#include "Cafe/Cheats/CheatManager.h"
 #include "util/helpers/SystemException.h"
 #include "Common/cpu_features.h"
 #include "input/InputManager.h"
@@ -424,6 +425,8 @@ void cemu_initForGame()
 	// load graphic packs
 	cemuLog_log(LogType::Force, "------- Activate graphic packs -------");
 	GraphicPack2::ActivateForCurrentTitle();
+	// load cheats (after graphic packs, so a cheat can overwrite a patched location)
+	CheatManager::OnTitleStart(CafeSystem::GetForegroundTitleId());
 	// print audio log
 	IAudioAPI::PrintLogging();
 	IAudioInputAPI::PrintLogging();
@@ -1058,6 +1061,7 @@ namespace CafeSystem
 	{
 		if(!sSystemRunning)
 			return;
+        CheatManager::OnTitleStop();
         coreinit::OSSchedulerEnd();
         Latte_Stop();
         // reset Cafe OS userspace modules

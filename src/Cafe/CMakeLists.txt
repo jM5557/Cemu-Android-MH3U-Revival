@@ -4,6 +4,11 @@ add_library(CemuCafe
   Account/Account.h
   CafeSystem.cpp
   CafeSystem.h
+  Cheats/CheatFile.cpp
+  Cheats/CheatManager.cpp
+  Cheats/CheatManager.h
+  Cheats/GatewayCheat.cpp
+  Cheats/GatewayCheat.h
   Filesystem/fsc.cpp
   Filesystem/fscDeviceHostFS.cpp
   Filesystem/fscDeviceHostFS.h
