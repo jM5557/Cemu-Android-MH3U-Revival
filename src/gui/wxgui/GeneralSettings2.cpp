@@ -486,8 +486,9 @@ wxPanel* GeneralSettings2::AddGraphicsPage(wxNotebook* notebook)
 	}
 
 	{
-		wxString choices[] = { _("Keep aspect ratio"), _("Stretch") };
-		m_fullscreen_scaling = new wxRadioBox(graphics_panel, wxID_ANY, _("Fullscreen scaling"), wxDefaultPosition, wxDefaultSize, std::size(choices), choices, 5, wxRA_SPECIFY_COLS);
+		// order must match the FullscreenScaling enum
+		wxString choices[] = { _("Keep aspect ratio"), _("Stretch"), _("Fill (crop)"), _("16:9"), _("16:10"), _("4:3"), _("21:9"), _("Integer scale") };
+		m_fullscreen_scaling = new wxRadioBox(graphics_panel, wxID_ANY, _("Fullscreen scaling"), wxDefaultPosition, wxDefaultSize, std::size(choices), choices, 4, wxRA_SPECIFY_COLS);
 		m_fullscreen_scaling->SetToolTip(_("Controls the output aspect ratio when it doesn't match the ratio of the game"));
 		m_fullscreen_scaling->Bind(wxEVT_RADIOBOX, [](wxCommandEvent& event) {
 			GetConfig().fullscreen_scaling = event.GetSelection();
@@ -1888,7 +1889,7 @@ void GeneralSettings2::ApplyConfig()
 #endif
 	m_upscale_filter->SetSelection(config.upscale_filter);
 	m_downscale_filter->SetSelection(config.downscale_filter);
-	m_fullscreen_scaling->SetSelection(config.fullscreen_scaling);
+	m_fullscreen_scaling->SetSelection(std::clamp<sint32>(config.fullscreen_scaling, 0, (sint32)m_fullscreen_scaling->GetCount() - 1));
 
 	wxASSERT((uint32)config.overlay.position < m_overlay_position->GetCount());
 	m_overlay_position->SetSelection((int)config.overlay.position);

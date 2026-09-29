@@ -1,6 +1,7 @@
 #include "JNIUtils.h"
 #include "audio/IAudioAPI.h"
 #include "config/CemuConfig.h"
+#include "Cafe/HW/Latte/Core/Latte.h"
 #include "config/NetworkSettings.h"
 
 extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
@@ -258,7 +259,22 @@ Java_info_cemu_cemu_nativeinterface_NativeSettings_setFullscreenScaling([[maybe_
 extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeSettings_getFullscreenScaling([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
 {
-	return GetConfig().fullscreen_scaling;
+	const sint32 value = GetConfig().fullscreen_scaling;
+	return (value >= 0 && value < kFullscreenScalingCount) ? value : kKeepAspectRatio;
+}
+
+// Per-game screen layout for the running session; -1 clears it and falls back to the setting above.
+// Takes effect on the next frame. Not saved by the core, the app stores it per title.
+extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeSettings_setScreenLayoutOverride([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jint layout)
+{
+	LatteRenderTarget_setScreenLayoutOverride(layout);
+}
+
+extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeSettings_getScreenLayoutOverride([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+{
+	return LatteRenderTarget_getScreenLayoutOverride();
 }
 
 extern "C" [[maybe_unused]] JNIEXPORT void JNICALL

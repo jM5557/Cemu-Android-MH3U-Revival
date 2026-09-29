@@ -9,6 +9,7 @@
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
+#include <atomic>
 #include "Cafe/GraphicPack/GraphicPack2.h"
 #include "config/ActiveSettings.h"
 #include "WindowSystem.h"
@@ -827,31 +828,105 @@ void LatteRenderTarget_itHLEClearColorDepthStencil(uint32 clearMask,
 sint32 _currentOutputImageWidth = 0;
 sint32 _currentOutputImageHeight = 0;
 
+static std::atomic<sint32> s_screenLayoutOverride{-1};
+
+void LatteRenderTarget_setScreenLayoutOverride(sint32 layout)
+{
+	if (layout < 0 || layout >= kFullscreenScalingCount)
+		layout = -1;
+	s_screenLayoutOverride.store(layout);
+}
+
+sint32 LatteRenderTarget_getScreenLayoutOverride()
+{
+	return s_screenLayoutOverride.load();
+}
+
+// Largest w x h box with aspect ratio num:den that fits inside the screen.
+static void _fitAspect(sint64 screenW, sint64 screenH, sint64 num, sint64 den, sint32& outW, sint32& outH)
+{
+	num = std::max<sint64>(num, 1);
+	den = std::max<sint64>(den, 1);
+	sint64 w = screenW;
+	sint64 h = screenW * den / num;
+	if (h > screenH)
+	{
+		h = screenH;
+		w = screenH * num / den;
+	}
+	outW = (sint32)w;
+	outH = (sint32)h;
+}
+
 void LatteRenderTarget_getScreenImageArea(sint32* x, sint32* y, sint32* width, sint32* height, sint32* fullWidth, sint32* fullHeight, bool padView)
 {
 	int w, h;
-	if(padView && WindowSystem::IsPadWindowOpen())
+	const bool separatePadWindow = padView && WindowSystem::IsPadWindowOpen();
+	if(separatePadWindow)
 		WindowSystem::GetPadWindowPhysSize(w, h);
 	else
 		WindowSystem::GetWindowPhysSize(w, h);
 
+	sint32 layout = s_screenLayoutOverride.load();
+	if (layout < 0)
+		layout = GetConfig().fullscreen_scaling;
+	// The separate GamePad window is for touch. Cropping or distorting it would move or hide
+	// touch targets, so it only ever follows fit or stretch.
+	if (separatePadWindow && layout != kStretch)
+		layout = kKeepAspectRatio;
+
+	const sint64 srcW = std::max(_currentOutputImageWidth, 1);
+	const sint64 srcH = std::max(_currentOutputImageHeight, 1);
 	sint32 scaledOutputX;
 	sint32 scaledOutputY;
-	if (GetConfig().fullscreen_scaling == kKeepAspectRatio)
+	switch (layout)
 	{
-		// calculate maximum possible resolution with intact aspect ratio
-		scaledOutputX = w;
-		scaledOutputY = _currentOutputImageHeight * w / std::max(_currentOutputImageWidth, 1);
-		if (scaledOutputY > h)
-		{
-			scaledOutputX = _currentOutputImageWidth * h / std::max(_currentOutputImageHeight, 1);
-			scaledOutputY = h;
-		}
-	}
-	else
-	{
+	case kStretch:
 		scaledOutputX = w;
 		scaledOutputY = h;
+		break;
+	case kFill:
+	{
+		// cover the screen: scale by the larger factor, the overflow is clipped by the viewport
+		sint64 fw = w;
+		sint64 fh = srcH * w / srcW;
+		if (fh < h)
+		{
+			fh = h;
+			fw = srcW * h / srcH;
+		}
+		scaledOutputX = (sint32)fw;
+		scaledOutputY = (sint32)fh;
+		break;
+	}
+	case kAspect16x9:
+		_fitAspect(w, h, 16, 9, scaledOutputX, scaledOutputY);
+		break;
+	case kAspect16x10:
+		_fitAspect(w, h, 16, 10, scaledOutputX, scaledOutputY);
+		break;
+	case kAspect4x3:
+		_fitAspect(w, h, 4, 3, scaledOutputX, scaledOutputY);
+		break;
+	case kAspect21x9:
+		_fitAspect(w, h, 21, 9, scaledOutputX, scaledOutputY);
+		break;
+	case kIntegerScale:
+	{
+		const sint64 factor = std::min<sint64>(w / srcW, h / srcH);
+		if (factor >= 1)
+		{
+			scaledOutputX = (sint32)(srcW * factor);
+			scaledOutputY = (sint32)(srcH * factor);
+		}
+		else // image is larger than the screen (e.g. upscaled by a graphic pack): just fit it
+			_fitAspect(w, h, srcW, srcH, scaledOutputX, scaledOutputY);
+		break;
+	}
+	case kKeepAspectRatio:
+	default:
+		_fitAspect(w, h, srcW, srcH, scaledOutputX, scaledOutputY);
+		break;
 	}
 
 	*x = (w - scaledOutputX) / 2;

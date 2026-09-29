@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -60,6 +61,8 @@ import info.cemu.cemu.R
 import info.cemu.cemu.common.settings.GamePadPosition
 import info.cemu.cemu.common.cheats.CheatsDialog
 import info.cemu.cemu.common.settings.HotkeyAction
+import info.cemu.cemu.common.settings.ScreenLayouts
+import info.cemu.cemu.common.settings.screenLayoutToString
 import info.cemu.cemu.common.ui.extensions.showMessage
 import info.cemu.cemu.common.ui.localization.tr
 import info.cemu.cemu.emulation.emulatedusbdevices.EmulatedUSBDevicesDialog
@@ -73,6 +76,7 @@ import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView.InputMode.E
 import info.cemu.cemu.nativeinterface.NativeCheats
 import info.cemu.cemu.nativeinterface.NativeCustomTextures
 import info.cemu.cemu.nativeinterface.NativeEmulation
+import info.cemu.cemu.nativeinterface.NativeSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -96,6 +100,19 @@ fun EmulationScreen(
     var inputOverlayInputMode by rememberSaveable { mutableStateOf(DEFAULT) }
     var showEmulatedUSBDevices by remember { mutableStateOf(false) }
     var cheatsTitleId by remember { mutableStateOf<Long?>(null) }
+    var showScreenLayoutDialog by remember { mutableStateOf(false) }
+    // 0 until the game is up
+    var runningTitleId by remember { mutableLongStateOf(0L) }
+
+    LaunchedEffect(Unit) {
+        while (runningTitleId == 0L) {
+            runningTitleId = NativeCheats.getRunningTitleId()
+            if (runningTitleId == 0L) delay(500)
+        }
+        // Per-game screen layout, so a layout picked for one game's widescreen mod does not
+        // follow you into every other game.
+        ScreenLayouts.applyOverride(runningTitleId)
+    }
 
     val emulationError by viewModel.emulationError.collectAsState()
     val isEmulationInitialized by viewModel.isEmulationInitialized.collectAsState()
@@ -181,6 +198,10 @@ fun EmulationScreen(
                             showEmulatedUSBDevices = true
                             closeDrawer()
                         },
+                        onShowScreenLayout = {
+                            showScreenLayoutDialog = runningTitleId != 0L
+                            closeDrawer()
+                        },
                         onShowCheats = {
                             // 0 means nothing is running yet (still booting); there is no list to show
                             cheatsTitleId = NativeCheats.getRunningTitleId().takeIf { it != 0L }
@@ -257,6 +278,13 @@ fun EmulationScreen(
         )
     }
 
+    if (showScreenLayoutDialog) {
+        ScreenLayoutDialog(
+            titleId = runningTitleId,
+            onDismiss = { showScreenLayoutDialog = false },
+        )
+    }
+
     cheatsTitleId?.let { titleId ->
         CheatsDialog(
             titleId = titleId,
@@ -310,6 +338,7 @@ private fun EmulationSideMenuContent(
     sideMenuState: SideMenuState,
     updateState: (SideMenuState) -> Unit,
     onShowEmulatedUSBDevices: () -> Unit,
+    onShowScreenLayout: () -> Unit,
     onShowCheats: () -> Unit,
     onEditInputOverlay: () -> Unit,
     onResetInputOverlay: () -> Unit,
@@ -336,6 +365,11 @@ private fun EmulationSideMenuContent(
     TextButtonItem(
         label = tr("Emulated USB Devices"),
         onClick = onShowEmulatedUSBDevices,
+    )
+
+    TextButtonItem(
+        label = tr("Screen layout"),
+        onClick = onShowScreenLayout,
     )
 
     TextButtonItem(
@@ -403,6 +437,61 @@ private fun CustomTexturesItem() {
             }
         },
     )
+}
+
+/**
+ * Screen layout for the running game only. Applies on the next frame and is remembered for this
+ * game; "Use default" follows the Screen layout graphics setting.
+ */
+@Composable
+private fun ScreenLayoutDialog(titleId: Long, onDismiss: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val override by remember(titleId) { ScreenLayouts.overrideFlow(titleId) }
+        .collectAsState(initial = null)
+    val defaultLayout = remember { NativeSettings.getFullscreenScaling() }
+
+    fun select(layout: Int?) {
+        scope.launch { ScreenLayouts.setOverride(titleId, layout) }
+        onDismiss()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(tr("Screen layout")) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                ScreenLayoutRow(
+                    label = tr("Use default ({0})", screenLayoutToString(defaultLayout)),
+                    selected = override == null,
+                    onClick = { select(null) },
+                )
+                ScreenLayouts.all.forEach { layout ->
+                    ScreenLayoutRow(
+                        label = screenLayoutToString(layout),
+                        selected = override == layout,
+                        onClick = { select(layout) },
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(tr("Close")) }
+        },
+    )
+}
+
+@Composable
+private fun ScreenLayoutRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Text(text = label, modifier = Modifier.padding(start = 8.dp))
+    }
 }
 
 @Composable

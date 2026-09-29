@@ -87,6 +87,10 @@ void LatteRenderTarget_updateScissorBox();
 
 void LatteRenderTarget_trackUpdates();
 
+// Per-game screen layout (a FullscreenScaling value) that wins over the global setting until
+// cleared with -1. Not saved by the core; the front end re-applies it when the game starts.
+void LatteRenderTarget_setScreenLayoutOverride(sint32 layout);
+sint32 LatteRenderTarget_getScreenLayoutOverride();
 void LatteRenderTarget_getScreenImageArea(sint32* x, sint32* y, sint32* width, sint32* height, sint32* fullWidth, sint32* fullHeight, bool padView = false);
 void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPadView);
 

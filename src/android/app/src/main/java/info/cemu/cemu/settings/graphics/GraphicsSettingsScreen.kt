@@ -2,6 +2,8 @@ package info.cemu.cemu.settings.graphics
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import info.cemu.cemu.common.settings.ScreenLayouts
+import info.cemu.cemu.common.settings.screenLayoutToString
 import info.cemu.cemu.common.ui.components.Button
 import info.cemu.cemu.common.ui.components.ScreenContent
 import info.cemu.cemu.common.ui.components.SingleSelection
@@ -55,14 +57,11 @@ fun GraphicsSettingsScreen(navigateBack: () -> Unit, goToCustomDriversSettings: 
             onCheckedChanged = NativeSettings::setAccurateBarriers,
         )
         SingleSelection(
-            label = tr("Fullscreen scaling"),
+            label = tr("Screen layout"),
             initialChoice = NativeSettings::getFullscreenScaling,
             onChoiceChanged = NativeSettings::setFullscreenScaling,
-            choiceToString = { fullscreenScalingModeToString(it) },
-            choices = listOf(
-                NativeSettings.FullscreenScaling.KEEP_ASPECT_RATIO,
-                NativeSettings.FullscreenScaling.STRETCH
-            ),
+            choiceToString = { screenLayoutToString(it) },
+            choices = ScreenLayouts.all,
         )
         SingleSelection(
             label = tr("Upscale filter"),
@@ -94,10 +93,4 @@ private fun vsyncModeToString(vsyncMode: Int) = when (vsyncMode) {
     NativeSettings.VSyncMode.DOUBLE_BUFFERING -> tr("Double buffering")
     NativeSettings.VSyncMode.TRIPLE_BUFFERING -> tr("Triple buffering")
     else -> throw IllegalArgumentException("Invalid vsync mode: $vsyncMode")
-}
-
-private fun fullscreenScalingModeToString(fullscreenScaling: Int) = when (fullscreenScaling) {
-    NativeSettings.FullscreenScaling.KEEP_ASPECT_RATIO -> tr("Keep aspect ratio")
-    NativeSettings.FullscreenScaling.STRETCH -> tr("Stretch")
-    else -> throw IllegalArgumentException("Invalid fullscreen scaling mode:  $fullscreenScaling")
 }

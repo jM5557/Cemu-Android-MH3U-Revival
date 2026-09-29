@@ -69,6 +69,11 @@ data class AppSettings(
     val inputOverlaySettings: InputOverlaySettings = InputOverlaySettings(),
     val hotkeySettings: Map<HotkeyAction, HotkeyCombo> = emptyMap(),
     val customTextureSettings: CustomTextureSettings = CustomTextureSettings(),
+    /**
+     * Per-game screen layout (a NativeSettings.FullscreenScaling value), keyed by title id as a
+     * 16-digit lowercase hex string. A game with no entry uses the Screen layout graphics setting.
+     */
+    val screenLayoutOverrides: Map<String, Int> = emptyMap(),
 )
 
 object AppSettingsSerializer : Serializer<AppSettings> {

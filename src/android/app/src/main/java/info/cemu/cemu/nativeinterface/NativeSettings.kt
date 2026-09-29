@@ -31,9 +31,16 @@ object NativeSettings {
     @JvmStatic
     external fun setVsyncMode(value: Int)
 
+    /** Screen layouts. Must match the FullscreenScaling enum in CemuConfig.h. */
     object FullscreenScaling {
         const val KEEP_ASPECT_RATIO: Int = 0
         const val STRETCH: Int = 1
+        const val FILL: Int = 2
+        const val ASPECT_16_9: Int = 3
+        const val ASPECT_16_10: Int = 4
+        const val ASPECT_4_3: Int = 5
+        const val ASPECT_21_9: Int = 6
+        const val INTEGER_SCALE: Int = 7
     }
 
     @JvmStatic
@@ -41,6 +48,13 @@ object NativeSettings {
 
     @JvmStatic
     external fun setFullscreenScaling(value: Int)
+
+    /** Per-game layout for the running session, or -1 for none. Applies on the next frame. */
+    @JvmStatic
+    external fun setScreenLayoutOverride(layout: Int)
+
+    @JvmStatic
+    external fun getScreenLayoutOverride(): Int
 
     object ScalingFilter {
         const val BILINEAR_FILTER: Int = 0

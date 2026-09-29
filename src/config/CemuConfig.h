@@ -87,10 +87,19 @@ enum UpscalingFilter
 	kNearestNeighborFilter,
 };
 
+// Also used as the "screen layout". Values are stored in settings.xml and by the Android app, so
+// only ever append.
 enum FullscreenScaling
 {
-	kKeepAspectRatio,
-	kStretch,
+	kKeepAspectRatio, // fit: largest size with the game's own aspect ratio, black bars
+	kStretch,         // fill the screen, ignore the aspect ratio
+	kFill,            // keep the aspect ratio but cover the whole screen, cropping the overflow
+	kAspect16x9,      // display as 16:9 whatever the game renders (for widescreen hacks and mods)
+	kAspect16x10,
+	kAspect4x3,
+	kAspect21x9,
+	kIntegerScale,    // largest whole-number multiple of the image that fits; pixel-sharp
+	kFullscreenScalingCount
 };
 
 enum class ScreenPosition
