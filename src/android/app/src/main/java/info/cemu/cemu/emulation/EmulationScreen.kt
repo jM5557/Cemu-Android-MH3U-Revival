@@ -281,6 +281,15 @@ fun EmulationScreen(
     if (showScreenLayoutDialog) {
         ScreenLayoutDialog(
             titleId = runningTitleId,
+            onSelect = { layout ->
+                // Apply first, synchronously, then save. The save runs in this screen's scope,
+                // which outlives the dialog; the dialog's own scope is cancelled the moment it
+                // closes, which used to drop the change and made a second tap necessary.
+                ScreenLayouts.applyNow(layout)
+                val titleId = runningTitleId
+                scope.launch { ScreenLayouts.saveOverride(titleId, layout) }
+                showScreenLayoutDialog = false
+            },
             onDismiss = { showScreenLayoutDialog = false },
         )
     }
@@ -444,16 +453,12 @@ private fun CustomTexturesItem() {
  * game; "Use default" follows the Screen layout graphics setting.
  */
 @Composable
-private fun ScreenLayoutDialog(titleId: Long, onDismiss: () -> Unit) {
-    val scope = rememberCoroutineScope()
+private fun ScreenLayoutDialog(titleId: Long, onSelect: (Int?) -> Unit, onDismiss: () -> Unit) {
     val override by remember(titleId) { ScreenLayouts.overrideFlow(titleId) }
         .collectAsState(initial = null)
     val defaultLayout = remember { NativeSettings.getFullscreenScaling() }
 
-    fun select(layout: Int?) {
-        scope.launch { ScreenLayouts.setOverride(titleId, layout) }
-        onDismiss()
-    }
+    fun select(layout: Int?) = onSelect(layout)
 
     AlertDialog(
         onDismissRequest = onDismiss,

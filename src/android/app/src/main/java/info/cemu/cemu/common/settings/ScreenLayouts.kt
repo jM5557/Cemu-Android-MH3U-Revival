@@ -25,14 +25,22 @@ object ScreenLayouts {
         it.screenLayoutOverrides[titleKey(titleId)]
     }
 
-    /** Saves [layout] for [titleId] (null = follow the setting) and applies it straight away. */
-    suspend fun setOverride(titleId: Long, layout: Int?) {
+    /**
+     * Applies [layout] to the running game immediately (null = follow the setting). Synchronous and
+     * cheap, so call it directly from the click handler: it must not depend on a coroutine that a
+     * closing dialog could cancel.
+     */
+    fun applyNow(layout: Int?) {
+        NativeSettings.setScreenLayoutOverride(layout ?: -1)
+    }
+
+    /** Remembers [layout] for [titleId] (null = follow the setting). Does not apply it. */
+    suspend fun saveOverride(titleId: Long, layout: Int?) {
         AppSettingsStore.dataStore.updateData { appSettings ->
             val overrides = appSettings.screenLayoutOverrides.toMutableMap()
             if (layout == null) overrides.remove(titleKey(titleId)) else overrides[titleKey(titleId)] = layout
             appSettings.copy(screenLayoutOverrides = overrides)
         }
-        NativeSettings.setScreenLayoutOverride(layout ?: -1)
     }
 
     /** Pushes the saved layout for [titleId] into the core. Call once the game is running. */
