@@ -193,7 +193,7 @@ private fun TextureDumpSection() {
 
     Toggle(
         label = tr("Dump textures"),
-        description = tr("Saves every texture the game draws that a pack can replace, as a TGA named exactly as its replacement must be named. Also available from the in-game menu. Stays on until you turn it off."),
+        description = tr("Saves every texture the game draws that a pack can replace, as a TGA named exactly as its replacement must be named. Stays on until you turn it off."),
         checked = dumping,
         onCheckedChanged = { enabled ->
             scope.launch { CustomTexturesRepository.setDumpingTextures(enabled) }

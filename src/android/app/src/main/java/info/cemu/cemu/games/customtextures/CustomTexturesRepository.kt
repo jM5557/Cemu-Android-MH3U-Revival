@@ -21,6 +21,29 @@ object CustomTexturesRepository {
     fun titleSettingsFlow(titleId: Long) =
         settingsFlow.map { it.titles[titleKey(titleId)] ?: CustomTextureTitleSettings() }
 
+    /** Whether custom textures actually load for [titleId]: the global switch and the title's own. */
+    fun isActiveForTitleFlow(titleId: Long) = settingsFlow.map {
+        it.globallyEnabled && (it.titles[titleKey(titleId)]?.enabled ?: true)
+    }
+
+    /**
+     * Turns custom textures on or off for one title, keeping its pack selection. A title that was
+     * never configured means "every pack in its folder", so that is what gets stored for it --
+     * the same thing the per-game screen does when its switch is changed.
+     *
+     * Does not reload anything; call [NativeCustomTextures.reloadTextures] for a running game.
+     */
+    suspend fun setTitleEnabled(titleId: Long, enabled: Boolean) {
+        val settings = settingsFlow.first()
+        val packs = settings.titles[titleKey(titleId)]?.packs
+            ?: NativeCustomTextures.listPacks(titleId).toList().sorted()
+        setTitleSettings(titleId, enabled, packs)
+        // The global switch has no UI of its own; make sure it cannot silently override this one.
+        if (enabled && !settings.globallyEnabled) {
+            setGloballyEnabled(true)
+        }
+    }
+
     /** Call once after ActiveSettings has been initialised, before any title starts. */
     suspend fun applyAll() {
         val settings = settingsFlow.first()

@@ -26,7 +26,6 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.SnackbarHost
@@ -40,6 +39,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,7 +64,6 @@ import info.cemu.cemu.common.ui.extensions.showMessage
 import info.cemu.cemu.common.ui.localization.tr
 import info.cemu.cemu.emulation.emulatedusbdevices.EmulatedUSBDevicesDialog
 import info.cemu.cemu.games.customtextures.CustomTexturesRepository
-import info.cemu.cemu.games.customtextures.rememberTextureDumpStatus
 import info.cemu.cemu.emulation.input.HotkeyManager
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurface
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView
@@ -74,7 +73,10 @@ import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView.InputMode.E
 import info.cemu.cemu.nativeinterface.NativeCheats
 import info.cemu.cemu.nativeinterface.NativeCustomTextures
 import info.cemu.cemu.nativeinterface.NativeEmulation
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun EmulationScreen(
@@ -341,7 +343,7 @@ private fun EmulationSideMenuContent(
         onClick = onShowCheats,
     )
 
-    TextureDumpItem()
+    CustomTexturesItem()
 
     CheckboxItem(
         label = tr("Show input overlay"),
@@ -368,40 +370,39 @@ private fun EmulationSideMenuContent(
 }
 
 /**
- * Texture dumping, switchable mid-game. Turning it on flushes the texture cache so what is on
- * screen is written straight away, and the count below shows it happening. The drawer stays open
- * so the count can be watched.
+ * Custom textures for the running game, switchable mid-game. It is the same setting as the switch
+ * on the game's Custom textures screen. The texture cache is flushed afterwards so the change is
+ * visible straight away, no restart needed; expect a short stutter while textures reload.
  */
 @Composable
-private fun TextureDumpItem() {
+private fun CustomTexturesItem() {
     val scope = rememberCoroutineScope()
-    val settings by CustomTexturesRepository.settingsFlow.collectAsState(initial = null)
-    val dumping = settings?.dumpTextures ?: NativeCustomTextures.isDumpingTextures()
-
-    CheckboxItem(
-        label = tr("Dump textures"),
-        checked = dumping,
-        onCheckedChange = { enabled ->
-            scope.launch { CustomTexturesRepository.setDumpingTextures(enabled) }
-        },
-    )
-    if (dumping) {
-        // The drawer is composed during gameplay too, so skip listing the folder here.
-        val status by rememberTextureDumpStatus(countFolder = false)
-        Text(
-            text = status.summary(),
-            fontSize = 12.sp,
-            modifier = Modifier.padding(horizontal = 8.dp),
-        )
-        if (status.lastError.isNotEmpty()) {
-            Text(
-                text = tr("Last error: {0}", status.lastError),
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = 8.dp),
-            )
+    // 0 while the game is still booting. The drawer content is composed from the start and is
+    // not guaranteed to recompose later, so keep asking until the game is up.
+    var titleId by remember { mutableLongStateOf(NativeCheats.getRunningTitleId()) }
+    LaunchedEffect(Unit) {
+        while (titleId == 0L) {
+            delay(1000)
+            titleId = NativeCheats.getRunningTitleId()
         }
     }
+    val active by remember(titleId) {
+        CustomTexturesRepository.isActiveForTitleFlow(titleId)
+    }.collectAsState(initial = true)
+
+    CheckboxItem(
+        label = tr("Enable custom textures"),
+        checked = titleId != 0L && active,
+        enabled = titleId != 0L,
+        onCheckedChange = { enabled ->
+            scope.launch {
+                withContext(Dispatchers.IO) {
+                    CustomTexturesRepository.setTitleEnabled(titleId, enabled)
+                }
+                NativeCustomTextures.reloadTextures()
+            }
+        },
+    )
 }
 
 @Composable
