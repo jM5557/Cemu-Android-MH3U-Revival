@@ -53,6 +53,11 @@ data class CustomTextureTitleSettings(
 @Serializable
 data class CustomTextureSettings(
     val globallyEnabled: Boolean = true,
+    /**
+     * Texture dumping. Persisted because the app process exits every time a game is closed, which
+     * would otherwise switch it back off behind the user's back.
+     */
+    val dumpTextures: Boolean = false,
     /** Keyed by title id as a 16-digit lowercase hex string. */
     val titles: Map<String, CustomTextureTitleSettings> = emptyMap(),
 )

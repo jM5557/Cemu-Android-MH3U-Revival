@@ -75,14 +75,26 @@ class EmulationActivity : AppCompatActivity() {
             return true
         }
 
+        // While the side menu is open, still let sticks/triggers that return to rest reach the
+        // emulated controller. Otherwise a stick held when the menu opened stays held in-game.
+        if (!processInputEvents) {
+            InputHandler.onMotionEventReleasesOnly(event)
+        }
+
         return super.onGenericMotionEvent(event)
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         HotkeyManager.onKeyEvent(event)
 
-        if (processInputEvents && InputHandler.onKeyEvent(event)) {
-            return true
+        if (processInputEvents) {
+            if (InputHandler.onKeyEvent(event)) {
+                return true
+            }
+        } else if (event.action == KeyEvent.ACTION_UP) {
+            // A button held when the menu opened must still be released in-game.
+            // Don't consume the event, the menu may need it too.
+            InputHandler.onKeyEvent(event)
         }
 
         if (event.keyCode == KeyEvent.KEYCODE_BUTTON_MODE && event.isFromPhysicalController()) {

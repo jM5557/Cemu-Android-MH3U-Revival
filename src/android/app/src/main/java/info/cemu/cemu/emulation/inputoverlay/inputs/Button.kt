@@ -30,11 +30,22 @@ abstract class Button(
                     return true
                 }
             }
+
+            // The gesture was taken away from us (system back gesture, drawer, ...).
+            // No UP will follow, so release now or the button stays held.
+            MotionEvent.ACTION_CANCEL -> {
+                if (currentPointerId != -1) {
+                    currentPointerId = -1
+                    updateState(false)
+                    return true
+                }
+            }
         }
         return false
     }
 
     override fun resetInput() {
+        currentPointerId = -1
         updateState(false)
     }
 

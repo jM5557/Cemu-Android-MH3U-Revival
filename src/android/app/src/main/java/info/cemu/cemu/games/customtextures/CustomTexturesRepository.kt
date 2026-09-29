@@ -25,6 +25,7 @@ object CustomTexturesRepository {
     suspend fun applyAll() {
         val settings = settingsFlow.first()
         NativeCustomTextures.setGloballyEnabled(settings.globallyEnabled)
+        NativeCustomTextures.setDumpingTextures(settings.dumpTextures)
         settings.titles.forEach { (key, titleSettings) ->
             val titleId = key.toULongOrNull(16)?.toLong() ?: return@forEach
             NativeCustomTextures.setTitleSettings(
@@ -64,5 +65,14 @@ object CustomTexturesRepository {
             )
         }
         NativeCustomTextures.setGloballyEnabled(enabled)
+    }
+
+    suspend fun setDumpingTextures(enabled: Boolean) {
+        AppSettingsStore.dataStore.updateData { appSettings ->
+            appSettings.copy(
+                customTextureSettings = appSettings.customTextureSettings.copy(dumpTextures = enabled)
+            )
+        }
+        NativeCustomTextures.setDumpingTextures(enabled)
     }
 }

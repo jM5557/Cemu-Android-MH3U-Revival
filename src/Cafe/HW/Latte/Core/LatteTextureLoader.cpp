@@ -634,14 +634,9 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	Latte::E_GX2SURFFMT format = tex->format;
 	LatteTextureLoader_begin(&textureLoader, sliceIndex, mipIndex, physImagePtr, physMipPtr, format, dim, width, height, depth, mipLevels, pitch, tileMode, swizzle);
 
-	// enable texture dumping
-	textureLoader.dump = ActiveSettings::DumpTexturesEnabled();
-	if (textureLoader.dump)
-	{
-		uint32 dumpSize = (((textureLoader.width + 4)&~4) * ((textureLoader.height + 4)&~4)) * 4;
-		textureLoader.dumpRGBA = (uint8*)malloc(dumpSize);
-		memset(textureLoader.dumpRGBA, 0x00, dumpSize);
-	}
+	// Texture dumping is decided further down, once it is known whether this surface is one a
+	// pack can replace. Only those are dumped, named exactly as a replacement must be named.
+	textureLoader.dump = false;
 
 	// query texture decoder from renderer
 	TextureDecoder* texDecoder = nullptr;
@@ -665,20 +660,32 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	const bool _replGpuOwned = tex->isUpdatedOnGPU ||
 		(tex->overwriteInfo.hasResolutionOverwrite && !tex->replOverwriteIsOurs);
 	const bool _replUncompressed = LatteTextureReplace::IsReplaceableUncompressed(format) && !_replGpuOwned;
-	if (mipIndex == 0 && sliceIndex == 0 && LatteTextureReplace::IsEnabled() && (Latte::IsCompressedFormat(format) || _replUncompressed))
+	const bool _replReplaceable = Latte::IsCompressedFormat(format) || _replUncompressed;
+	const bool _dumpEnabled = ActiveSettings::DumpTexturesEnabled();
+	if (mipIndex == 0 && sliceIndex == 0 && _replReplaceable && (_dumpEnabled || LatteTextureReplace::IsEnabled()))
 	{
-		tex->replStrongHash = LatteTextureReplace::HashGuest(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format);
-		// Same inputs, pre-discriminator algorithm. Only used to build rename_map.csv so an existing
-		// pack can be migrated to the new names; nothing looks a texture up by this.
-		tex->replLegacyHash = LatteTextureReplace::HashGuestRaw(physImagePtr, (uint32)textureLoader.maxOffsetOutdated);
-		// Recorded here rather than from the dump block: building rename_map.csv needs nothing but
-		// the two hashes, so it must not depend on image writing working. Both hashes are the same
-		// for every mip of a surface, so emit an entry per level to cover whatever the pack ships.
-		if (LatteTextureReplace::IsRecordingRenameMap())
-		{
-			for (sint32 m = 0; m < std::max<sint32>(1, tex->mipLevels); m++)
-				LatteTextureReplace::RecordRenameMapping(tex->replLegacyHash, tex->replStrongHash, tex->width, tex->height, (uint32)format, m);
-		}
+		// HashGuestAlways rather than HashGuest: dump names must be right even with no pack loaded.
+		// The value is identical, so a replacement lookup is unaffected.
+		tex->replStrongHash = LatteTextureReplace::HashGuestAlways(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format);
+	}
+
+	// Dump slice 0 of each mip of a replaceable surface, once. The name is the one the replacement
+	// loader matches on, so a dumped file can be edited and dropped into a pack as-is (after
+	// converting TGA to DDS). Everything else -- render targets, depth buffers, formats a pack
+	// cannot replace -- is skipped: those names could never be used and render targets alone are
+	// megabytes each, rewritten every time they reload.
+	fs::path dumpPath;
+	if (_dumpEnabled && _replReplaceable && sliceIndex == 0 && tex->replStrongHash != 0)
+	{
+		dumpPath = ActiveSettings::GetUserDataPath("dump/textures") /
+			fmt::format("{:016x}_{:d}x{:d}_fmt{:04x}_mip{:02d}.tga", tex->replStrongHash, tex->width, tex->height, (uint32)tex->format, mipIndex);
+		textureLoader.dump = LatteTextureReplace::DumpShouldWrite(dumpPath);
+	}
+	if (textureLoader.dump)
+	{
+		uint32 dumpSize = (((textureLoader.width + 4)&~4) * ((textureLoader.height + 4)&~4)) * 4;
+		textureLoader.dumpRGBA = (uint8*)malloc(dumpSize);
+		memset(textureLoader.dumpRGBA, 0x00, dumpSize);
 	}
 
 	if (tex->isDataDefined == false && LatteTextureReplace::IsEnabled() && Latte::IsCompressedFormat(format))
@@ -746,7 +753,14 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	}
 
 	if (texDecoder == nullptr)
+	{
+		if (textureLoader.dump)
+		{
+			free(textureLoader.dumpRGBA);
+			LatteTextureReplace::DumpRecordResult(dumpPath, false, "no decoder for this format");
+		}
 		return;
+	}
 
 	textureLoader.decodedTexelCountX = texDecoder->getTexelCountX(&textureLoader);
 	textureLoader.decodedTexelCountY = texDecoder->getTexelCountY(&textureLoader);
@@ -805,28 +819,9 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	// write texture dump
 	if (textureLoader.dump)
 	{
-		fs::path path = ActiveSettings::GetUserDataPath("dump/textures");
-		if (LatteTextureReplace::IsEnabled())
-		{
-			// name the dump with the same key the replacement loader matches on, so a dumped
-			// filename can be reused verbatim as the replacement filename
-			uint64 texHashForDump = tex->replStrongHash;
-			if (texHashForDump == 0)
-				texHashForDump = LatteTextureReplace::HashGuest(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, tex->format);
-			path /= fmt::format("{:016x}_{:d}x{:d}_fmt{:04x}_mip{:02d}.tga", texHashForDump, tex->width, tex->height, (uint32)tex->format, mipIndex);
-		}
-		else
-			path /= fmt::format("{:08x}_fmt{:04x}_slice{:d}_mip{:02d}_{:d}x{:d}_tm{:02d}.tga", physImagePtr, (uint32)tex->format, sliceIndex, mipIndex, tex->width, tex->height, tileMode);
-		if (!tga_write_rgba(path, textureLoader.width, textureLoader.height, textureLoader.dumpRGBA))
-		{
-			// Rate-limited: a failing dump fails for every texture, every frame.
-			static uint32 s_dumpFailures = 0;
-			if (s_dumpFailures < 5)
-			{
-				s_dumpFailures++;
-				cemuLog_log(LogType::Force, "[TextureDump] failed to write {}", path.string());
-			}
-		}
+		std::string dumpError;
+		const bool dumpOk = tga_write_rgba(dumpPath, textureLoader.width, textureLoader.height, textureLoader.dumpRGBA, &dumpError);
+		LatteTextureReplace::DumpRecordResult(dumpPath, dumpOk, dumpError);
 		free(textureLoader.dumpRGBA);
 	}
 	// clean up

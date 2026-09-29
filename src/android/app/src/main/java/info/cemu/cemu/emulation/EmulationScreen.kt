@@ -26,6 +26,7 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.SnackbarHost
@@ -62,6 +63,8 @@ import info.cemu.cemu.common.settings.HotkeyAction
 import info.cemu.cemu.common.ui.extensions.showMessage
 import info.cemu.cemu.common.ui.localization.tr
 import info.cemu.cemu.emulation.emulatedusbdevices.EmulatedUSBDevicesDialog
+import info.cemu.cemu.games.customtextures.CustomTexturesRepository
+import info.cemu.cemu.games.customtextures.rememberTextureDumpStatus
 import info.cemu.cemu.emulation.input.HotkeyManager
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurface
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView
@@ -69,6 +72,7 @@ import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView.InputMode.D
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView.InputMode.EDIT_POSITION
 import info.cemu.cemu.emulation.inputoverlay.InputOverlaySurfaceView.InputMode.EDIT_SIZE
 import info.cemu.cemu.nativeinterface.NativeCheats
+import info.cemu.cemu.nativeinterface.NativeCustomTextures
 import info.cemu.cemu.nativeinterface.NativeEmulation
 import kotlinx.coroutines.launch
 
@@ -191,12 +195,14 @@ fun EmulationScreen(
             mainHolderCallback = viewModel.mainHolderCallback,
             padHolderCallback = viewModel.padHolderCallback,
             onInitializeEmulation = viewModel::initializeEmulation,
+            isInputEnabled = drawerState.isClosed,
         )
 
         InputOverlaySurface(
             isVisible = isInputOverlayVisible,
             inputOverlaySettings = inputOverlaySettings,
             inputMode = inputOverlayInputMode,
+            isInputEnabled = drawerState.isClosed,
             onEditFinished = { viewModel.saveInputOverlayRectangles(it) },
         )
 
@@ -335,6 +341,8 @@ private fun EmulationSideMenuContent(
         onClick = onShowCheats,
     )
 
+    TextureDumpItem()
+
     CheckboxItem(
         label = tr("Show input overlay"),
         checked = sideMenuState.isInputOverlayVisible,
@@ -357,6 +365,43 @@ private fun EmulationSideMenuContent(
         label = tr("Exit"),
         onClick = onQuit,
     )
+}
+
+/**
+ * Texture dumping, switchable mid-game. Turning it on flushes the texture cache so what is on
+ * screen is written straight away, and the count below shows it happening. The drawer stays open
+ * so the count can be watched.
+ */
+@Composable
+private fun TextureDumpItem() {
+    val scope = rememberCoroutineScope()
+    val settings by CustomTexturesRepository.settingsFlow.collectAsState(initial = null)
+    val dumping = settings?.dumpTextures ?: NativeCustomTextures.isDumpingTextures()
+
+    CheckboxItem(
+        label = tr("Dump textures"),
+        checked = dumping,
+        onCheckedChange = { enabled ->
+            scope.launch { CustomTexturesRepository.setDumpingTextures(enabled) }
+        },
+    )
+    if (dumping) {
+        // The drawer is composed during gameplay too, so skip listing the folder here.
+        val status by rememberTextureDumpStatus(countFolder = false)
+        Text(
+            text = status.summary(),
+            fontSize = 12.sp,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
+        if (status.lastError.isNotEmpty()) {
+            Text(
+                text = tr("Last error: {0}", status.lastError),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(horizontal = 8.dp),
+            )
+        }
+    }
 }
 
 @Composable
@@ -415,7 +460,8 @@ private fun EmulationSurfaces(
     gamePadPosition: GamePadPosition?,
     mainHolderCallback: SurfaceHolder.Callback,
     padHolderCallback: SurfaceHolder.Callback,
-    onInitializeEmulation: () -> Unit
+    onInitializeEmulation: () -> Unit,
+    isInputEnabled: Boolean,
 ) {
     if (gamePadPosition == null) {
         return
@@ -431,6 +477,7 @@ private fun EmulationSurfaces(
             modifier = modifier,
             isTV = true,
             holderCallback = mainHolderCallback,
+            isInputEnabled = isInputEnabled,
             afterInit = { onInitializeEmulation() },
         )
     }
@@ -442,6 +489,7 @@ private fun EmulationSurfaces(
                 modifier = modifier,
                 isTV = false,
                 holderCallback = padHolderCallback,
+                isInputEnabled = isInputEnabled,
             )
         }
     }
@@ -486,15 +534,24 @@ private fun EmulationSurface(
     modifier: Modifier,
     isTV: Boolean,
     holderCallback: SurfaceHolder.Callback,
+    isInputEnabled: Boolean,
     afterInit: () -> Unit = {}
 ) {
+    val touchListener = remember(isTV) { CanvasOnTouchListener(isTV) }
     AndroidView(
         modifier = modifier,
+        update = {
+            // Opening the menu takes the touch away mid-gesture; make sure the game
+            // does not keep seeing the touch screen as pressed.
+            if (!isInputEnabled) {
+                touchListener.release()
+            }
+        },
         factory = { context ->
             SurfaceView(context).apply {
                 var firstChange = true
 
-                setOnTouchListener(CanvasOnTouchListener(isTV))
+                setOnTouchListener(touchListener)
 
                 holder.addCallback(holderCallback)
 

@@ -6,7 +6,6 @@
 #include "JNIUtils.h"
 
 #include <filesystem>
-#include <fstream>
 #include <string>
 #include <vector>
 
@@ -105,10 +104,8 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_reloadTextures([[maybe_
 	LatteAsyncCommands_queueReloadTextures();
 }
 
-// Texture dumping is a Debug-menu item on desktop and was never wired up on Android. It is needed
-// here to produce dump/textures/rename_map.csv, which migrates a pack to the current hash scheme.
-// The flag lives in ActiveSettings and is not persisted, so it resets on restart - deliberate,
-// since dumping writes a TGA per texture and is not something to leave on by accident.
+// Texture dumping is a Debug-menu item on desktop. The Android app persists the switch itself and
+// pushes it back in at startup, because the process exits every time a game is closed.
 extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_isDumpingTextures([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
 {
@@ -118,78 +115,44 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_isDumpingTextures([[may
 extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_setDumpingTextures([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enabled)
 {
+	const bool wasEnabled = ActiveSettings::DumpTexturesEnabled();
 	ActiveSettings::EnableDumpTextures(enabled == JNI_TRUE);
-	if (enabled != JNI_TRUE)
+	if (enabled != JNI_TRUE || wasEnabled)
 		return;
-	// Two things are needed or the toggle appears to do nothing at all.
-	//
-	// 1. Nothing creates dump/textures. tga_write_rgba goes through FileStream::createFile2, which
-	//    does not create parent directories, so every write fails silently and the folder never
-	//    appears. On desktop the wx app creates the user-data tree at startup; the Android port
-	//    does not.
 	std::error_code ec;
 	const auto dumpDir = ActiveSettings::GetUserDataPath("dump/textures");
 	std::filesystem::create_directories(dumpDir, ec);
-	cemuLog_log(LogType::Force, "[TextureDump] enabled, writing to {} (dir ok: {}, title running: {})",
-		dumpDir.string(), !ec || std::filesystem::exists(dumpDir), CafeSystem::IsTitleRunning());
-	// 2. The flag is sampled per texture *load*, and a texture already in the cache is never
-	//    reloaded. Without a flush, enabling mid-session dumps only textures the game happens to
-	//    upload afterwards, which in a static scene is none of them.
+	cemuLog_log(LogType::Force, "[TextureDump] enabled, writing to {} (folder ok: {})",
+		dumpDir.string(), std::filesystem::is_directory(dumpDir, ec));
+	// Dumps are written when a texture is loaded, and textures already in the cache are never
+	// loaded again. Flush the cache so what is on screen right now gets written too.
 	if (CafeSystem::IsTitleRunning())
 		LatteAsyncCommands_queueReloadTextures();
 }
 
-// <UserData>/dump/textures - where the TGAs and rename_map.csv land.
+// <UserData>/dump/textures
 extern "C" [[maybe_unused]] JNIEXPORT jstring JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getDumpFolder(JNIEnv* env, [[maybe_unused]] jclass clazz)
 {
 	return JNIUtils::ToJString(env, ActiveSettings::GetUserDataPath("dump/textures").string());
 }
 
-// Records dump/textures/rename_map.csv without writing any images. Migrating a pack to the current
-// hash scheme only needs the old and new hash of each texture, and both are computed during a
-// normal load, so this deliberately shares nothing with the image dump path.
-extern "C" [[maybe_unused]] JNIEXPORT jboolean JNICALL
-Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_isScanningForMigration([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
+// [written, failed] since the app started (or since the folder was last cleared).
+extern "C" [[maybe_unused]] JNIEXPORT jintArray JNICALL
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getDumpCounts(JNIEnv* env, [[maybe_unused]] jclass clazz)
 {
-	return LatteTextureReplace::IsRecordingRenameMap() ? JNI_TRUE : JNI_FALSE;
+	const auto stats = LatteTextureReplace::GetDumpStats();
+	const jint values[2] = {(jint)stats.written, (jint)stats.failed};
+	jintArray result = env->NewIntArray(2);
+	env->SetIntArrayRegion(result, 0, 2, values);
+	return result;
 }
 
-extern "C" [[maybe_unused]] JNIEXPORT void JNICALL
-Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_setScanningForMigration([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz, jboolean enabled)
-{
-	LatteTextureReplace::SetRecordRenameMap(enabled == JNI_TRUE);
-	if (enabled != JNI_TRUE)
-		return;
-	std::error_code ec;
-	std::filesystem::create_directories(ActiveSettings::GetUserDataPath("dump/textures"), ec);
-	// The hashes are computed per texture load, so the cache has to re-upload for anything already
-	// on screen to be recorded.
-	if (CafeSystem::IsTitleRunning())
-		LatteAsyncCommands_queueReloadTextures();
-}
-
-// Full path of rename_map.csv, which lives beside the dumped TGAs.
+// Why the most recent failed write failed, or an empty string.
 extern "C" [[maybe_unused]] JNIEXPORT jstring JNICALL
-Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getRenameMapPath(JNIEnv* env, [[maybe_unused]] jclass clazz)
+Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getDumpLastError(JNIEnv* env, [[maybe_unused]] jclass clazz)
 {
-	return JNIUtils::ToJString(env, (ActiveSettings::GetUserDataPath("dump/textures") / "rename_map.csv").string());
-}
-
-// Number of lines currently in rename_map.csv, or -1 if it does not exist yet. Lets the UI say
-// whether a scan is actually producing anything instead of leaving the user to go looking.
-extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
-Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getRenameMapEntryCount([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
-{
-	std::ifstream in(ActiveSettings::GetUserDataPath("dump/textures") / "rename_map.csv");
-	if (!in.is_open())
-		return -1;
-	jint count = 0;
-	std::string line;
-	while (std::getline(in, line))
-		if (!line.empty())
-			count++;
-	return count;
+	return JNIUtils::ToJString(env, LatteTextureReplace::GetDumpStats().lastError);
 }
 
 // Number of files sitting in dump/textures.
@@ -207,9 +170,7 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_getDumpFileCount([[mayb
 	return count;
 }
 
-// Deletes everything in dump/textures, including rename_map.csv, and returns how many files went.
-// Subdirectories are left alone. Also clears the in-memory dedup set, otherwise a scan after
-// clearing would record nothing because those textures were already seen this session.
+// Deletes every file in dump/textures and returns how many went. Subdirectories are left alone.
 extern "C" [[maybe_unused]] JNIEXPORT jint JNICALL
 Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_clearDumpFolder([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass clazz)
 {
@@ -227,12 +188,10 @@ Java_info_cemu_cemu_nativeinterface_NativeCustomTextures_clearDumpFolder([[maybe
 				removed++;
 		}
 	}
-	LatteTextureReplace::ResetRenameMapping();
-	// Both dumping and the migration scan act per texture *load*. Clearing the folder while a title
-	// is running would otherwise leave nothing to regenerate the files: the texture cache is still
-	// warm, so nothing reloads, so nothing is written and it looks like dumping has broken. Flush
-	// the cache so everything re-uploads through the dump and hash paths again.
-	if (CafeSystem::IsTitleRunning())
+	// Each file is only written once per session, so forget which ones were written, then flush
+	// the texture cache so everything on screen is loaded, and dumped, again.
+	LatteTextureReplace::ResetDumpSession();
+	if (CafeSystem::IsTitleRunning() && ActiveSettings::DumpTexturesEnabled())
 		LatteAsyncCommands_queueReloadTextures();
 	return removed;
 }

@@ -150,7 +150,6 @@ public:
 	MPTR texDataPtrHigh{};
 	uint32 texDataHash2{};
 	uint64 replStrongHash{}; // [texture replacement] full-data content hash (our lookup key)
-	uint64 replLegacyHash{}; // [texture replacement] pre-discriminator hash, only used to emit rename_map.csv
 	// state
 	bool isUpdatedOnGPU{ false }; // set if any GPU-side operation modified this texture and strict one-way RAM->VRAM memory mirroring no longer applies
 	bool replGaveUp{ false };     // [texture replacement] stop re-checking this texture for a late replacement

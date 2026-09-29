@@ -73,6 +73,11 @@ abstract class Input protected constructor(
 
     protected abstract fun resetInput()
 
+    /** Releases the input as if every finger on it was lifted. */
+    fun release() {
+        resetInput()
+    }
+
     fun reset() {
         drawBoundingRectangle = false
     }

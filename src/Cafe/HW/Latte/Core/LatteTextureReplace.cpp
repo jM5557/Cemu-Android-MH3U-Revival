@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include <map>
 #include <set>
 #include <mutex>
@@ -227,11 +228,7 @@ namespace LatteTextureReplace
 	//
 	// HashData's XOR accumulation also leaves the combined value with no avalanche, so near-identical
 	// inputs produced near-identical hashes. A splitmix64 finalizer fixes that.
-	//
-	// NOTE: this changes every hash value, so pack filenames from before this commit no longer
-	// match. See RecordRenameMapping below for the migration path.
-	uint64_t HashGuest(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt){
-		if(!s_enabled) { std::scoped_lock lock(s_mutex); EnsureInit(); if(!s_enabled) return 0; }
+	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt){
 		const uint8* p=(const uint8*)memory_getPointerFromPhysicalOffset(physImagePtr);
 		if(!p||!sizeBytes) return 0;
 		uint64_t h = HashData(p, sizeBytes);
@@ -244,10 +241,9 @@ namespace LatteTextureReplace
 		return h ? h : 1; // 0 is the "no hash" sentinel elsewhere
 	}
 
-	uint64_t HashGuestRaw(uint32_t physImagePtr, uint32_t sizeBytes){
-		const uint8* p=(const uint8*)memory_getPointerFromPhysicalOffset(physImagePtr);
-		if(!p||!sizeBytes) return 0;
-		return HashData(p, sizeBytes);
+	uint64_t HashGuest(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt){
+		if(!s_enabled) { std::scoped_lock lock(s_mutex); EnsureInit(); if(!s_enabled) return 0; }
+		return HashGuestAlways(physImagePtr, sizeBytes, pixelCount, fmt);
 	}
 
 	// Read the real dimensions/format out of the DDS header. Deliberately NOT done while indexing:
@@ -474,37 +470,43 @@ namespace LatteTextureReplace
 		return &g.rgba8[mipIndex];
 	}
 
-	// Migration aid for the hash change above. While texture dumping is on, every texture whose
-	// legacy and current hashes differ appends one line to dump/textures/rename_map.csv:
-	//   <old filename>,<new filename>
-	// Play through the areas your pack covers, then run tools/migrate_texture_pack.py against it to
-	// rename the pack in place. Deduplicated in memory so a texture seen every frame is recorded once.
-	static std::atomic<bool> s_recordRenameMap{false};
-	static std::mutex s_renameMutex;
-	static std::set<std::pair<uint64_t,int>> s_renameSeen;
+	// Texture dump bookkeeping. Written from the GPU thread, read and reset from the UI thread.
+	static std::mutex s_dumpMutex;
+	static std::unordered_set<std::string> s_dumpSeen;
+	static DumpStats s_dumpStats;
 
-	void SetRecordRenameMap(bool enabled){ s_recordRenameMap.store(enabled); }
-
-	// Entries are deduplicated in memory for the life of the process, so deleting rename_map.csv
-	// without clearing that set would leave a later scan recording nothing.
-	void ResetRenameMapping(){ std::scoped_lock lock(s_renameMutex); s_renameSeen.clear(); }
-	bool IsRecordingRenameMap(){ return s_recordRenameMap.load(); }
-
-	void RecordRenameMapping(uint64_t legacyHash, uint64_t newHash, int width, int height, uint32_t gx2Format, int mipIndex)
-	{
-		if(!s_recordRenameMap.load()) return;
-		if(!legacyHash || !newHash || legacyHash == newHash) return;
-		std::scoped_lock lock(s_renameMutex);
-		if(!s_renameSeen.insert({legacyHash, mipIndex}).second) return;
+	bool DumpShouldWrite(const std::filesystem::path& path){
+		std::scoped_lock lock(s_dumpMutex);
+		if(!s_dumpSeen.insert(path.filename().string()).second) return false;
 		std::error_code ec;
-		fs::path dir = ActiveSettings::GetUserDataPath("dump/textures");
-		fs::create_directories(dir, ec);
-		std::ofstream out(dir / "rename_map.csv", std::ios::app);
-		if(!out.is_open()) return;
-		char oldName[128], newName[128];
-		snprintf(oldName, sizeof(oldName), "%016llx_%dx%d_fmt%04x_mip%02d", (unsigned long long)legacyHash, width, height, gx2Format, mipIndex);
-		snprintf(newName, sizeof(newName), "%016llx_%dx%d_fmt%04x_mip%02d", (unsigned long long)newHash,    width, height, gx2Format, mipIndex);
-		out << oldName << "," << newName << "\n";
+		// Left over from an earlier session: keep it rather than rewriting it on every launch.
+		return !std::filesystem::exists(path, ec);
+	}
+
+	void DumpRecordResult(const std::filesystem::path& path, bool ok, const std::string& error){
+		std::scoped_lock lock(s_dumpMutex);
+		if(ok){
+			if(s_dumpStats.written == 0)
+				cemuLog_log(LogType::Force, "[TextureDump] first texture written: {}", path.string());
+			s_dumpStats.written++;
+			s_dumpStats.lastFile = path.filename().string();
+			return;
+		}
+		// A failing dump usually fails for every texture, so only the first few are logged.
+		if(s_dumpStats.failed < 5)
+			cemuLog_log(LogType::Force, "[TextureDump] failed to write {}: {}", path.string(), error);
+		s_dumpStats.failed++;
+		s_dumpStats.lastError = path.filename().string() + ": " + error;
+		// Let it be retried on the next load rather than giving up on it for the session.
+		s_dumpSeen.erase(path.filename().string());
+	}
+
+	DumpStats GetDumpStats(){ std::scoped_lock lock(s_dumpMutex); return s_dumpStats; }
+
+	void ResetDumpSession(){
+		std::scoped_lock lock(s_dumpMutex);
+		s_dumpSeen.clear();
+		s_dumpStats = DumpStats{};
 	}
 
 	void SetTitleSettings(uint64_t titleId, bool enabled, const std::vector<std::string>& packs){

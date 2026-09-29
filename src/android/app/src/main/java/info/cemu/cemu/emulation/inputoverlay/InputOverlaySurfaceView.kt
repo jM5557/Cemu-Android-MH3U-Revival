@@ -88,6 +88,17 @@ class InputOverlaySurfaceView(context: Context) : SurfaceView(context), OnTouchL
         invalidate()
     }
 
+    /**
+     * Releases every overlay button, stick and D-pad. Used when something else (the side menu,
+     * the system back gesture) takes the touch stream away, since no ACTION_UP will arrive then.
+     */
+    fun releaseAllInputs() {
+        for ((_, input) in inputs) {
+            input.release()
+        }
+        invalidate()
+    }
+
     fun setVisible(isVisible: Boolean) {
         if (this.isVisible == isVisible) {
             return
@@ -569,6 +580,7 @@ fun InputOverlaySurface(
     isVisible: Boolean,
     inputOverlaySettings: InputOverlaySettings,
     inputMode: InputOverlaySurfaceView.InputMode,
+    isInputEnabled: Boolean = true,
     onEditFinished: (Map<OverlayInputConfig, InputOverlayRect>) -> Unit,
 ) {
     AndroidView(
@@ -582,6 +594,9 @@ fun InputOverlaySurface(
             }
         },
         update = { view ->
+            if (!isInputEnabled) {
+                view.releaseAllInputs()
+            }
             view.setVisible(isVisible)
             view.setInputMode(inputMode)
             view.applySettings(inputOverlaySettings)

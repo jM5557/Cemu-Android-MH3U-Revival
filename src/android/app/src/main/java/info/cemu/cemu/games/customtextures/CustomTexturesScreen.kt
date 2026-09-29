@@ -1,5 +1,7 @@
 package info.cemu.cemu.games.customtextures
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,7 +18,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -24,6 +25,7 @@ import kotlinx.coroutines.withContext
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.MutableCreationExtras
@@ -120,8 +122,7 @@ fun CustomTexturesScreen(
 
         HorizontalDivider()
 
-        TextureDumpToggle()
-        MigrationScanToggle()
+        TextureDumpSection()
 
         Button(
             label = tr("Reload textures now"),
@@ -162,97 +163,84 @@ private fun PackRow(
 }
 
 /**
- * Turns Cemu's texture dumping on for this session.
- *
- * Two uses: it produces correctly-named TGA files to base a pack on, and it writes
- * dump/textures/rename_map.csv, which tools/migrate_texture_pack.py uses to rename a pack built
- * against the old hash scheme. Only textures actually drawn get recorded, so play through the
- * areas the pack covers.
- *
- * Not persisted - it resets when the app restarts, because dumping writes a file per texture.
+ * Texture dumping: writes each replaceable texture the game loads to dump/textures, named exactly
+ * as a replacement for it has to be named. Only textures that are actually drawn get written, so
+ * play through the areas you want.
  */
 @Composable
-private fun TextureDumpToggle() {
-    var dumping by remember { mutableStateOf(NativeCustomTextures.isDumpingTextures()) }
+private fun TextureDumpSection() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val settings by CustomTexturesRepository.settingsFlow.collectAsState(initial = null)
+    val dumping = settings?.dumpTextures ?: NativeCustomTextures.isDumpingTextures()
+    val status by rememberTextureDumpStatus()
     val folder = remember { NativeCustomTextures.getDumpFolder() }
+    var resultMessage by remember { mutableStateOf<String?>(null) }
+
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            resultMessage = tr("Exporting...")
+            val copied = withContext(Dispatchers.IO) {
+                runCatching { TextureDumpExport.export(context, uri) }
+            }
+            resultMessage = copied.fold(
+                onSuccess = { tr("Exported {0} new files to \"Cemu texture dump\"", it) },
+                onFailure = { tr("Export failed: {0}", it.message ?: it.javaClass.simpleName) },
+            )
+        }
+    }
 
     Toggle(
         label = tr("Dump textures"),
-        description = tr("Writes every texture the game draws, plus rename_map.csv for migrating a pack. Only dumps textures loaded after this is switched on, so turn it on before launching the game or move between areas. Resets when the app restarts."),
+        description = tr("Saves every texture the game draws that a pack can replace, as a TGA named exactly as its replacement must be named. Also available from the in-game menu. Stays on until you turn it off."),
         checked = dumping,
-        onCheckedChanged = {
-            dumping = it
-            NativeCustomTextures.setDumpingTextures(it)
-        },
-    )
-    if (dumping) {
-        Text(
-            text = folder,
-            style = MaterialTheme.typography.bodySmall,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 8.dp),
-        )
-    }
-}
-
-/**
- * Records dump/textures/rename_map.csv without writing images.
- *
- * Migrating a pack to the current hash scheme only needs each texture's old and new hash, both of
- * which are computed during a normal texture load. Keeping this separate from image dumping means
- * the migration works even if writing TGAs does not, and it is far faster and smaller.
- */
-@Composable
-private fun MigrationScanToggle() {
-    val scope = rememberCoroutineScope()
-    var scanning by remember { mutableStateOf(NativeCustomTextures.isScanningForMigration()) }
-    var entries by remember { mutableIntStateOf(NativeCustomTextures.getRenameMapEntryCount()) }
-    var dumpFiles by remember { mutableIntStateOf(NativeCustomTextures.getDumpFileCount()) }
-    val mapPath = remember { NativeCustomTextures.getRenameMapPath() }
-    var removedCount by remember { mutableIntStateOf(-1) }
-
-    Toggle(
-        label = tr("Scan for pack migration"),
-        description = tr("Records rename_map.csv so an older pack can be renamed to the current hash scheme. Writes no images. Play through the areas your pack covers, then turn it off."),
-        checked = scanning,
-        onCheckedChanged = {
-            scanning = it
-            NativeCustomTextures.setScanningForMigration(it)
-            entries = NativeCustomTextures.getRenameMapEntryCount()
+        onCheckedChanged = { enabled ->
+            scope.launch { CustomTexturesRepository.setDumpingTextures(enabled) }
         },
     )
     Text(
-        text = if (entries < 0) tr("rename_map.csv: not created yet") else tr("rename_map.csv: {0} entries", entries),
+        text = status.summary(),
         style = MaterialTheme.typography.bodySmall,
         modifier = Modifier.padding(horizontal = 8.dp),
     )
+    if (status.lastError.isNotEmpty()) {
+        Text(
+            text = tr("Last error: {0}", status.lastError),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
+    }
     Text(
-        text = mapPath,
+        text = folder,
         style = MaterialTheme.typography.bodySmall,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.padding(horizontal = 8.dp),
     )
 
-    HorizontalDivider()
-
+    Button(
+        label = tr("Export dumped textures"),
+        description = tr("Copies the dump folder to a folder you choose, such as Download, where any file manager or a PC can see it"),
+        onClick = { exportLauncher.launch(null) },
+    )
     Button(
         label = tr("Clear dump folder"),
-        description = if (dumpFiles > 0)
-            tr("Deletes all {0} files in dump/textures, including rename_map.csv, and reloads textures so they are written again", dumpFiles)
-        else
-            tr("Nothing to delete"),
+        description = when {
+            status.filesInFolder == 0 -> tr("Nothing to delete")
+            status.filesInFolder > 0 -> tr("Deletes all {0} files in dump/textures. Textures on screen are written again if dumping is on", status.filesInFolder)
+            else -> tr("Deletes every file in dump/textures")
+        },
         onClick = {
             scope.launch {
                 val removed = withContext(Dispatchers.IO) { NativeCustomTextures.clearDumpFolder() }
-                dumpFiles = NativeCustomTextures.getDumpFileCount()
-                entries = NativeCustomTextures.getRenameMapEntryCount()
-                removedCount = removed
+                resultMessage = tr("Removed {0} files", removed)
             }
         },
     )
-    if (removedCount >= 0) {
+    resultMessage?.let {
         Text(
-            text = tr("Removed {0} files", removedCount),
+            text = it,
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 8.dp),
         )

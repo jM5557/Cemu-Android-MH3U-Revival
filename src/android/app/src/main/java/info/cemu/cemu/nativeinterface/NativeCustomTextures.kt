@@ -36,7 +36,10 @@ object NativeCustomTextures {
     @JvmStatic
     external fun reloadTextures()
 
-    /** Writes a TGA per texture plus rename_map.csv. Resets on app restart. */
+    /**
+     * Writes each replaceable texture the game loads to dump/textures as a TGA named exactly as a
+     * replacement for it must be named. Persisted by [CustomTexturesRepository], not by the core.
+     */
     @JvmStatic
     external fun isDumpingTextures(): Boolean
 
@@ -46,20 +49,13 @@ object NativeCustomTextures {
     @JvmStatic
     external fun getDumpFolder(): String
 
-    /** Records rename_map.csv only. Independent of texture dumping. */
+    /** [written, failed] since the app started or the folder was last cleared. */
     @JvmStatic
-    external fun isScanningForMigration(): Boolean
+    external fun getDumpCounts(): IntArray
 
+    /** Why the most recent write failed, or an empty string. */
     @JvmStatic
-    external fun setScanningForMigration(enabled: Boolean)
-
-    /** Full path of rename_map.csv, which sits beside the dumped TGAs. */
-    @JvmStatic
-    external fun getRenameMapPath(): String
-
-    /** Lines in rename_map.csv, or -1 when the file does not exist yet. */
-    @JvmStatic
-    external fun getRenameMapEntryCount(): Int
+    external fun getDumpLastError(): String
 
     @JvmStatic
     external fun getDumpFileCount(): Int

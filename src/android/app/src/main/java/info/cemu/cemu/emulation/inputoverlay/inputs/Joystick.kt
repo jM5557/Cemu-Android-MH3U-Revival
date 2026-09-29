@@ -76,6 +76,13 @@ class Joystick(
                 }
             }
 
+            MotionEvent.ACTION_CANCEL -> {
+                if (currentPointerId != -1) {
+                    resetInput()
+                    return true
+                }
+            }
+
             MotionEvent.ACTION_MOVE -> {
                 if (currentPointerId == -1) {
                     return false
@@ -100,6 +107,9 @@ class Joystick(
     }
 
     override fun resetInput() {
+        currentPointerId = -1
+        centerX = originalCenterX
+        centerY = originalCenterY
         updateState(false, 0f, 0f)
     }
 

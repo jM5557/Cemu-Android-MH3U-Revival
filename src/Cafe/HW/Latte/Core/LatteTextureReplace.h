@@ -34,12 +34,6 @@ namespace LatteTextureReplace
 	bool IsReplaceableUncompressed(Latte::E_GX2SURFFMT format);
 	const LatteTextureReplace_Entry* GetSlice(uint64_t contentHash, int mipIndex);
 
-	// Appends one <old>,<new> filename pair to dump/textures/rename_map.csv. See the definition.
-	void RecordRenameMapping(uint64_t legacyHash, uint64_t newHash, int width, int height, uint32_t gx2Format, int mipIndex);
-	void SetRecordRenameMap(bool enabled);
-	void ResetRenameMapping();
-	bool IsRecordingRenameMap();
-
 	// Same slice, decoded to linear R8G8B8A8 and cached. Used when the graphics backend reports
 	// texture_isNativeCompressedFormat()==false for the replacement's format, which is the normal
 	// case on Adreno and Mali (no BC support in Vulkan). Returns nullptr if the format cannot be
@@ -52,7 +46,19 @@ namespace LatteTextureReplace
 	bool GetInfo(uint64_t contentHash, ReplacementInfo& out);
 	// full-data hash over the guest mip0 surface; stable and unique per distinct texture
 	uint64_t HashGuest(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt);
-	uint64_t HashGuestRaw(uint32_t physImagePtr, uint32_t sizeBytes); // always computes (used for dump naming)
+	// Same value as HashGuest, but computed even when no pack is loaded. Texture dumps are named
+	// with it, so a dumped file's name is exactly the name a replacement needs.
+	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt);
+
+	// ---- texture dumping ----
+	// Each dump file is written once. Returns false when fileName was already written this session
+	// or already exists in dump/textures, so a texture that reloads every frame costs nothing.
+	bool DumpShouldWrite(const std::filesystem::path& path);
+	void DumpRecordResult(const std::filesystem::path& path, bool ok, const std::string& error);
+	struct DumpStats { uint32_t written = 0; uint32_t failed = 0; std::string lastFile; std::string lastError; };
+	DumpStats GetDumpStats();
+	// Forgets which files were written, so clearing the folder lets them be written again.
+	void ResetDumpSession();
 
 	// ---- texture packs (per title) ----
 	// A pack is one folder directly inside load/textures/<titleId>/. Loose files in the title

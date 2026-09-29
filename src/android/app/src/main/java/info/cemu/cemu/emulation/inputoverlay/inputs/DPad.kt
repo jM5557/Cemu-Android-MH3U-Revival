@@ -147,6 +147,15 @@ class DPad(
                 }
             }
 
+            // Without this the D-pad keeps the cancelled pointer forever and ignores
+            // every later touch (ACTION_DOWN bails out while currentPointerId != -1).
+            MotionEvent.ACTION_CANCEL -> {
+                if (currentPointerId != -1) {
+                    resetInput()
+                    return true
+                }
+            }
+
             MotionEvent.ACTION_MOVE -> {
                 if (currentPointerId == -1) {
                     return false
@@ -166,6 +175,7 @@ class DPad(
     }
 
     override fun resetInput() {
+        currentPointerId = -1
         updateState(NONE)
     }
 
