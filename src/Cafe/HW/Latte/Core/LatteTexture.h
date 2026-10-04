@@ -371,3 +371,4 @@ void LatteTexture_UpdateTextureFromDynamicChanges(LatteTexture* texture);
 
 void LatteTexture_UpdateDataToLatest(LatteTexture* texture);
 void LatteTexture_RecheckReplacements(); // [texture replacement] surgical late-match recreate
+void LatteTexture_FlagReplRecreate(LatteTexture* texture); // [texture replacement] queue a recreate (done before the next commands run)

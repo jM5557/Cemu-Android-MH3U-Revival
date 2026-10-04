@@ -109,14 +109,9 @@ void LatteAsyncCommands_checkAndExecute()
 	// quick check if queue is empty (requires no lock)
 	if (Latte_GetStopSignal())
 		LatteThread_Exit();
-	// [texture replacement] periodic surgical re-check: rebuild only textures that missed their
-	// replacement at creation (no full flush -> no screen blink)
-	static uint32 s_lastReplRecheckFrame = 0;
-	if ((sint32)(LatteGPUState.frameCounter - s_lastReplRecheckFrame) > 30)
-	{
-		s_lastReplRecheckFrame = LatteGPUState.frameCounter;
-		LatteTexture_RecheckReplacements();
-	}
+	// [texture replacement] rebuild textures whose replacement no longer fits (reused for other data).
+	// Cheap when nothing is flagged; no full flush -> no screen blink
+	LatteTexture_RecheckReplacements();
 	if (LatteAsyncCommandQueue.empty())
 		return;
 	swl_gpuAsyncCommands.LockWrite();
