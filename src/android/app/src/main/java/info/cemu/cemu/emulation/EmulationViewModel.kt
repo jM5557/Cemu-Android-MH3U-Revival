@@ -38,6 +38,7 @@ data class SideMenuState(
     val isTVReplacedWithPad: Boolean = false,
     val isPadVisible: Boolean = false,
     val isInputOverlayVisible: Boolean = false,
+    val isEmulationPaused: Boolean = false,
 )
 
 class ConditionFlags(
@@ -123,7 +124,24 @@ class EmulationViewModel(
     }
 
     fun updateSideMenuState(sideMenuState: SideMenuState) {
+        val wasPaused = _sideMenuState.value.isEmulationPaused
         _sideMenuState.value = sideMenuState
+        if (sideMenuState.isEmulationPaused != wasPaused) {
+            setEmulationPaused(sideMenuState.isEmulationPaused)
+        }
+    }
+
+    /**
+     * "Pause emulation" from the side menu. The game stays paused until it is switched off again,
+     * including across the screen turning off and on (which pauses and resumes by itself).
+     */
+    private fun setEmulationPaused(paused: Boolean) {
+        if (paused) {
+            NativeEmulation.pauseTitle()
+        } else if (!destroyedSurfaces.get(isMain = true)) {
+            // with the screen off, it resumes once the surface is back (surfaceChanged)
+            NativeEmulation.resumeTitle()
+        }
     }
 
     val gamePadPosition = dataStore.data.map { it.emulationSettings.gamePadPosition }
@@ -157,7 +175,7 @@ class EmulationViewModel(
                 NativeEmulation.setSurface(surfaceHolder.surface, isMainCanvas)
                 val mainSurfaceWasDestroyed = destroyedSurfaces.get(isMain = true)
 
-                if (mainSurfaceWasDestroyed && isMainCanvas) {
+                if (mainSurfaceWasDestroyed && isMainCanvas && !_sideMenuState.value.isEmulationPaused) {
                     NativeEmulation.resumeTitle()
                 }
 

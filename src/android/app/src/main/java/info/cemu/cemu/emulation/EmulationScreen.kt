@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -49,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.LayoutDirection
@@ -87,6 +89,7 @@ fun EmulationScreen(
     gamePath: String,
     setMotionSensorEnabled: (Boolean) -> Unit,
     setInputListeningEnabled: (Boolean) -> Unit,
+    setKeepScreenOn: (Boolean) -> Unit,
     onQuit: () -> Unit,
     viewModel: EmulationViewModel = viewModel(
         factory = EmulationViewModel.Factory, extras = MutableCreationExtras().apply {
@@ -152,6 +155,10 @@ fun EmulationScreen(
         setInputListeningEnabled(drawerState.isClosed)
     }
 
+    LaunchedEffect(sideMenuState.isEmulationPaused) {
+        setKeepScreenOn(!sideMenuState.isEmulationPaused)
+    }
+
     LaunchedEffect(Unit) {
         HotkeyManager.actions.collect { action ->
             when (action) {
@@ -175,6 +182,7 @@ fun EmulationScreen(
                 ) {
                     EmulationSideMenuContent(
                         sideMenuState = sideMenuState,
+                        canPause = runningTitleId != 0L,
                         updateState = {
                             viewModel.updateSideMenuState(it)
                             setMotionSensorEnabled(it.isMotionEnabled)
@@ -228,6 +236,10 @@ fun EmulationScreen(
             isInputEnabled = drawerState.isClosed,
             onEditFinished = { viewModel.saveInputOverlayRectangles(it) },
         )
+
+        if (sideMenuState.isEmulationPaused) {
+            PausedIndicator()
+        }
 
         if (inputOverlayInputMode != DEFAULT) {
             EditInputsLayout(
@@ -304,6 +316,31 @@ fun EmulationScreen(
     EmulationTextInputDialog()
 }
 
+/** Shown over the game while it is paused; the side menu's "Pause emulation" resumes it. */
+@Composable
+private fun PausedIndicator() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.55f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = tr("Paused"),
+                color = Color.White,
+                fontSize = 28.sp,
+            )
+            Text(
+                text = tr("Open the menu and untick Pause emulation to continue"),
+                color = Color.White.copy(alpha = 0.8f),
+                fontSize = 14.sp,
+                modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun EditInputsLayout(
     inputMode: InputOverlaySurfaceView.InputMode,
@@ -345,6 +382,7 @@ private fun EditInputsLayout(
 @Composable
 private fun EmulationSideMenuContent(
     sideMenuState: SideMenuState,
+    canPause: Boolean,
     updateState: (SideMenuState) -> Unit,
     onShowEmulatedUSBDevices: () -> Unit,
     onShowScreenLayout: () -> Unit,
@@ -353,6 +391,14 @@ private fun EmulationSideMenuContent(
     onResetInputOverlay: () -> Unit,
     onQuit: () -> Unit,
 ) {
+    // Pausing before the game is up would do nothing, so it waits until then
+    CheckboxItem(
+        label = tr("Pause emulation"),
+        checked = sideMenuState.isEmulationPaused,
+        enabled = canPause,
+        onCheckedChange = { updateState(sideMenuState.copy(isEmulationPaused = it)) },
+    )
+
     CheckboxItem(
         label = tr("Enable motion"),
         checked = sideMenuState.isMotionEnabled,

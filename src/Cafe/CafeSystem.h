@@ -41,8 +41,11 @@ namespace CafeSystem
 	void LaunchForegroundTitle();
 	bool IsTitleRunning();
 
+	// Pause: every game thread is suspended, audio output stops and the emulator's own threads
+	// (CPU idle loop, GPU command processor) slow their polling right down to save power.
 	void PauseTitle();
 	void ResumeTitle();
+	bool IsTitlePaused();
 
 	bool GetOverrideArgStr(std::vector<std::string>& args);
 	void SetOverrideArgs(std::span<std::string> args);

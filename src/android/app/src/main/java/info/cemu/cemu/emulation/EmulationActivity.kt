@@ -145,6 +145,7 @@ class EmulationActivity : AppCompatActivity() {
                         setMotionSensorEnabled = inputManager::setDeviceMotionEnabled,
                         onQuit = ::onQuit,
                         setInputListeningEnabled = { processInputEvents = it },
+                        setKeepScreenOn = ::setKeepScreenOn,
                     )
                 }
             }
@@ -161,6 +162,15 @@ class EmulationActivity : AppCompatActivity() {
         super.onResume()
 
         inputManager.onResume(display.rotation)
+    }
+
+    // While paused the screen may time out and the device sleep as usual
+    private fun setKeepScreenOn(keepOn: Boolean) {
+        if (keepOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     private fun setupHotkeys() {

@@ -286,6 +286,8 @@ namespace snd_core
 	uint32 getNumProcessedFrames();
 
 	void AXOut_Init();
+	// starts or stops the host audio streams (TV, GamePad, portal)
+	void AXOut_updateDevicePlayState(bool isPlaying);
 
 	sint32 AIGetSamplesPerChannel(uint32 device);
 	sint32 AIGetChannelCount(uint32 device);

@@ -94,8 +94,13 @@ namespace coreinit
 		uint32 selectedCore;
 	};
 
+	// Set while the title is paused (every thread suspended): the scheduler's idle loop then
+	// sleeps between checks instead of spinning, so a paused game barely uses the CPU.
+	std::atomic_bool s_activeThreadsSuspended = false;
+
 	void SuspendActiveThreads()
 	{
+		s_activeThreadsSuspended = true;
 		if (activeThreadCount == 0)
 		{
 			return;
@@ -114,6 +119,7 @@ namespace coreinit
 
 	void ResumeActiveThreads()
 	{
+		s_activeThreadsSuspended = false;
 		if (activeThreadCount == 0)
 		{
 			return;
@@ -1307,6 +1313,8 @@ namespace coreinit
 				__OSCheckSystemEvents();
 				if(g_isMulticoreMode == false)
 					coreIndex = (coreIndex + 1) % 3;
+				if (s_activeThreadsSuspended.load(std::memory_order::relaxed))
+					std::this_thread::sleep_for(std::chrono::milliseconds(10)); // paused
 			}
 			else
 			{

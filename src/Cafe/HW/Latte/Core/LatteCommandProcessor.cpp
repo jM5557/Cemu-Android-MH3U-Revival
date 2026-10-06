@@ -166,7 +166,10 @@ uint32 LatteCP_readU32Deprc()
 		// still no command data available, do some other tasks
 		LatteTiming_HandleTimedVsync();
 		LatteAsyncCommands_checkAndExecute();
-		std::this_thread::yield();
+		if (CafeSystem::IsTitlePaused())
+			std::this_thread::sleep_for(std::chrono::milliseconds(10)); // nothing will arrive, don't spin
+		else
+			std::this_thread::yield();
 		performanceMonitor.gpuTime_idleTime.endMeasuring();
 	}
 	UNREACHABLE;
@@ -915,7 +918,10 @@ LatteCMDPtr LatteCP_itHLEWaitForFlip(LatteCMDPtr cmd, uint32 nWords)
 		}
 		// check if any GPU events happened
 		LatteTiming_HandleTimedVsync();
-		std::this_thread::yield();
+		if (CafeSystem::IsTitlePaused())
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		else
+			std::this_thread::yield();
 	}
 	return cmd;
 }

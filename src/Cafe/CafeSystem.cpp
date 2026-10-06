@@ -468,7 +468,7 @@ namespace CafeSystem
 	bool sSystemRunning = false;
 	TitleId sForegroundTitleId = 0;
 
-	bool sTitlePaused = false;
+	std::atomic_bool sTitlePaused = false; // read by the CPU idle loop and the GPU thread
 
 	GameInfo2 sGameInfo_ForegroundTitle;
 
@@ -925,6 +925,9 @@ namespace CafeSystem
 		sTitlePaused = true;
 
 		coreinit::SuspendActiveThreads();
+		// Stop the audio streams too, so the output device can idle. They start again by
+		// themselves once the game produces sound after resuming.
+		snd_core::AXOut_updateDevicePlayState(false);
 	}
 
 	void ResumeTitle()
@@ -937,6 +940,11 @@ namespace CafeSystem
 		sTitlePaused = false;
 
 		coreinit::ResumeActiveThreads();
+	}
+
+	bool IsTitlePaused()
+	{
+		return sTitlePaused;
 	}
 
 	TitleId GetForegroundTitleId()
