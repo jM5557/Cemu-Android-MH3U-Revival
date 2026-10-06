@@ -19,6 +19,7 @@ import info.cemu.cemu.common.settings.AppSettingsStore
 import info.cemu.cemu.common.settings.InputOverlayRect
 import info.cemu.cemu.common.settings.InputOverlaySettings
 import info.cemu.cemu.common.settings.OverlayInputConfig
+import info.cemu.cemu.nativeinterface.NativeCheats
 import info.cemu.cemu.nativeinterface.NativeEmulation
 import info.cemu.cemu.nativeinterface.NativeEmulation.PrepareTitleResult
 import info.cemu.cemu.nativeinterface.NativeException
@@ -121,6 +122,28 @@ class EmulationViewModel(
                 it.copy(inputOverlaySettings = overlaySettings)
             }
         }
+    }
+
+    // Eagerly, so the value is current when the app goes to the background
+    val pauseOnFocusLoss = dataStore.data.map { it.emulationSettings.pauseOnFocusLoss }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    fun setPauseOnFocusLoss(enabled: Boolean) {
+        viewModelScope.launch {
+            dataStore.updateData {
+                it.copy(emulationSettings = it.emulationSettings.copy(pauseOnFocusLoss = enabled))
+            }
+        }
+    }
+
+    /**
+     * The app went to the background (another app, home, or the screen was locked). With
+     * "Pause on focus loss / standby" on, the game is paused and stays paused when you come back.
+     */
+    fun onFocusLost() {
+        if (!pauseOnFocusLoss.value || _sideMenuState.value.isEmulationPaused) return
+        if (NativeCheats.getRunningTitleId() == 0L) return // still booting, nothing to pause
+        updateSideMenuState(_sideMenuState.value.copy(isEmulationPaused = true))
     }
 
     fun updateSideMenuState(sideMenuState: SideMenuState) {

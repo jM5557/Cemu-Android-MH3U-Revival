@@ -14,6 +14,8 @@ import java.io.OutputStream
 @Serializable
 data class EmulationSettings(
     val gamePadPosition: GamePadPosition = GamePadPosition.RIGHT,
+    // pause the game when leaving the app or locking the screen (resumed from the side menu)
+    val pauseOnFocusLoss: Boolean = false,
 )
 
 @Serializable

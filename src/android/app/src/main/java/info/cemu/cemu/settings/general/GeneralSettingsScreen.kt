@@ -10,6 +10,7 @@ import info.cemu.cemu.common.settings.GamePadPosition
 import info.cemu.cemu.common.ui.components.Button
 import info.cemu.cemu.common.ui.components.ScreenContent
 import info.cemu.cemu.common.ui.components.SingleSelection
+import info.cemu.cemu.common.ui.components.Toggle
 import info.cemu.cemu.common.ui.localization.tr
 import info.cemu.cemu.nativeinterface.NativeSettings
 
@@ -67,6 +68,12 @@ fun GeneralSettingsScreen(
             onChoiceChanged = { viewModel.setGamePadPosition(it) },
             choiceToString = { gamePadPositionToString(it) },
             choices = GamePadPosition.entries,
+        )
+        Toggle(
+            label = tr("Pause on focus loss / standby"),
+            description = tr("Pause the game when you switch to another app or lock the screen, to save battery. Resume it from the in-game menu."),
+            checked = emulationSettings.pauseOnFocusLoss,
+            onCheckedChanged = viewModel::setPauseOnFocusLoss,
         )
         Mh3uServerSection()
     }

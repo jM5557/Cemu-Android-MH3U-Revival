@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +58,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.viewmodel.MutableCreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
 import info.cemu.cemu.R
@@ -159,6 +162,15 @@ fun EmulationScreen(
         setKeepScreenOn(!sideMenuState.isEmulationPaused)
     }
 
+    // Another app in front, home, or the screen locked (not a configuration change)
+    val activity = LocalActivity.current
+    LifecycleEventEffect(Lifecycle.Event.ON_STOP) {
+        if (activity?.isChangingConfigurations != true) {
+            viewModel.onFocusLost()
+        }
+    }
+    val pauseOnFocusLoss by viewModel.pauseOnFocusLoss.collectAsState()
+
     LaunchedEffect(Unit) {
         HotkeyManager.actions.collect { action ->
             when (action) {
@@ -183,6 +195,8 @@ fun EmulationScreen(
                     EmulationSideMenuContent(
                         sideMenuState = sideMenuState,
                         canPause = runningTitleId != 0L,
+                        pauseOnFocusLoss = pauseOnFocusLoss,
+                        onPauseOnFocusLossChange = viewModel::setPauseOnFocusLoss,
                         updateState = {
                             viewModel.updateSideMenuState(it)
                             setMotionSensorEnabled(it.isMotionEnabled)
@@ -238,7 +252,9 @@ fun EmulationScreen(
         )
 
         if (sideMenuState.isEmulationPaused) {
-            PausedIndicator()
+            PausedIndicator(
+                onResume = { viewModel.updateSideMenuState(sideMenuState.copy(isEmulationPaused = false)) },
+            )
         }
 
         if (inputOverlayInputMode != DEFAULT) {
@@ -316,9 +332,9 @@ fun EmulationScreen(
     EmulationTextInputDialog()
 }
 
-/** Shown over the game while it is paused; the side menu's "Pause emulation" resumes it. */
+/** Shown over the game while it is paused; Resume (or the side menu's "Pause emulation") resumes it. */
 @Composable
-private fun PausedIndicator() {
+private fun PausedIndicator(onResume: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -331,12 +347,10 @@ private fun PausedIndicator() {
                 color = Color.White,
                 fontSize = 28.sp,
             )
-            Text(
-                text = tr("Open the menu and untick Pause emulation to continue"),
-                color = Color.White.copy(alpha = 0.8f),
-                fontSize = 14.sp,
-                modifier = Modifier.padding(top = 8.dp),
-            )
+            Button(
+                onClick = onResume,
+                modifier = Modifier.padding(top = 16.dp),
+            ) { Text(tr("Resume")) }
         }
     }
 }
@@ -383,6 +397,8 @@ private fun EditInputsLayout(
 private fun EmulationSideMenuContent(
     sideMenuState: SideMenuState,
     canPause: Boolean,
+    pauseOnFocusLoss: Boolean,
+    onPauseOnFocusLossChange: (Boolean) -> Unit,
     updateState: (SideMenuState) -> Unit,
     onShowEmulatedUSBDevices: () -> Unit,
     onShowScreenLayout: () -> Unit,
@@ -397,6 +413,13 @@ private fun EmulationSideMenuContent(
         checked = sideMenuState.isEmulationPaused,
         enabled = canPause,
         onCheckedChange = { updateState(sideMenuState.copy(isEmulationPaused = it)) },
+    )
+
+    // same setting as in General settings
+    CheckboxItem(
+        label = tr("Pause on focus loss / standby"),
+        checked = pauseOnFocusLoss,
+        onCheckedChange = onPauseOnFocusLossChange,
     )
 
     CheckboxItem(

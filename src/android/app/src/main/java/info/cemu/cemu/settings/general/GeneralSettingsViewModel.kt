@@ -48,6 +48,14 @@ class GeneralSettingsViewModel(
         }
     }
 
+    fun setPauseOnFocusLoss(enabled: Boolean) {
+        viewModelScope.launch {
+            dataStore.updateData {
+                it.copy(emulationSettings = it.emulationSettings.copy(pauseOnFocusLoss = enabled))
+            }
+        }
+    }
+
     fun setGamePadPosition(gamePadPosition: GamePadPosition) {
         viewModelScope.launch {
             dataStore.updateData {
