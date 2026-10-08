@@ -1,7 +1,8 @@
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
+    <!-- dark backdrop for the Cemu logo (angle 90: start at the bottom, end at the top) -->
     <gradient
         android:angle="90"
-        android:endColor="#00b5ff"
-        android:startColor="#0087b5" />
+        android:endColor="#2A2236"
+        android:startColor="#121016" />
 </shape>
