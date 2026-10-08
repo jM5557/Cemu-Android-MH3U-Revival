@@ -1,6 +1,7 @@
 package info.cemu.cemu.graphicpacks
 
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import info.cemu.cemu.nativeinterface.NativeGameTitles
@@ -8,7 +9,10 @@ import info.cemu.cemu.nativeinterface.NativeGraphicPacks
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -227,6 +231,29 @@ class GraphicPacksViewModel(
                     refreshGraphicPacks()
                 }
             }
+        }
+    }
+
+    private val _isImporting = MutableStateFlow(false)
+    val isImporting = _isImporting.asStateFlow()
+    private val _importResults = MutableSharedFlow<GraphicPackImportResult>(extraBufferCapacity = 1)
+    val importResults: SharedFlow<GraphicPackImportResult> = _importResults.asSharedFlow()
+
+    /** "+" > Import folder / Import zip */
+    fun importGraphicPack(context: Context, uri: Uri, isFolder: Boolean) {
+        if (_isImporting.value) return
+        _isImporting.value = true
+        viewModelScope.launch {
+            val result = if (isFolder) {
+                GraphicPackImporter.importFolder(context, uri)
+            } else {
+                GraphicPackImporter.importZip(context, uri)
+            }
+            if (result is GraphicPackImportResult.Success) {
+                refreshGraphicPacks()
+            }
+            _isImporting.value = false
+            _importResults.emit(result)
         }
     }
 

@@ -3,6 +3,8 @@
 package info.cemu.cemu.graphicpacks
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -83,6 +85,21 @@ fun GraphicPacksScreen(
         }
     }
 
+    val isImporting by graphicPacksViewModel.isImporting.collectAsState()
+    LaunchedEffect(Unit) {
+        graphicPacksViewModel.importResults.collect {
+            snackbarHostState.showMessage(this@LaunchedEffect, importResultToNotificationString(it))
+        }
+    }
+    val importFolderLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            if (uri != null) graphicPacksViewModel.importGraphicPack(context.applicationContext, uri, isFolder = true)
+        }
+    val importZipLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) graphicPacksViewModel.importGraphicPack(context.applicationContext, uri, isFolder = false)
+        }
+
     fun handleBack() {
         if (showGraphicPackSearch) {
             showGraphicPackSearch = false
@@ -111,6 +128,10 @@ fun GraphicPacksScreen(
                         showGraphicPackSearch = true
                     },
                     onDownloadClicked = { graphicPacksViewModel.downloadNewUpdate(context) },
+                    onImportFolderClicked = { importFolderLauncher.launch(null) },
+                    onImportZipClicked = {
+                        importZipLauncher.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                    },
                     installedOnlyChecked = installedOnly,
                     installedOnlyValueChange = graphicPacksViewModel::setInstalledOnly,
                 )
@@ -161,6 +182,15 @@ fun GraphicPacksScreen(
 
     }
 
+    if (isImporting) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text(tr("Importing graphic pack")) },
+            text = { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) },
+            confirmButton = {},
+        )
+    }
+
     if (isDownloading) {
         GraphicPacksDownloadDialog(
             onCancelRequest = {
@@ -177,6 +207,15 @@ private fun downloadStatusToDialogTextString(downloadStatus: GraphicPacksDownloa
         GraphicPacksDownloadStatus.DOWNLOADING -> tr("Downloading graphic packs...")
         GraphicPacksDownloadStatus.EXTRACTING -> tr("Extracting...")
         else -> tr("Processing...")
+    }
+
+private fun importResultToNotificationString(result: GraphicPackImportResult): String =
+    when (result) {
+        is GraphicPackImportResult.Success ->
+            if (result.packCount == 1) tr("Imported \"{0}\"", result.name)
+            else tr("Imported \"{0}\" ({1} graphic packs)", result.name, result.packCount)
+        GraphicPackImportResult.NoRulesFound -> tr("No graphic pack found: it needs a rules.txt file")
+        is GraphicPackImportResult.Error -> tr("Import failed: {0}", result.message)
     }
 
 private fun downloadEventToNotificationString(event: GraphicPacksEvent?): String? =
@@ -225,10 +264,41 @@ private fun GraphicPacksRootSectionActions(
     showMainActions: Boolean,
     onSearchClicked: () -> Unit,
     onDownloadClicked: () -> Unit,
+    onImportFolderClicked: () -> Unit,
+    onImportZipClicked: () -> Unit,
     installedOnlyChecked: Boolean,
     installedOnlyValueChange: (Boolean) -> Unit,
 ) {
     if (showMainActions) {
+        // import your own pack (a folder, or a zip that is unzipped) into graphicPacks
+        var showImportMenu by remember { mutableStateOf(false) }
+        Box {
+            IconButton(onClick = { showImportMenu = true }) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_add),
+                    contentDescription = tr("Import graphic pack"),
+                )
+            }
+            DropdownMenu(
+                expanded = showImportMenu,
+                onDismissRequest = { showImportMenu = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text(tr("Import folder")) },
+                    onClick = {
+                        showImportMenu = false
+                        onImportFolderClicked()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(tr("Import zip")) },
+                    onClick = {
+                        showImportMenu = false
+                        onImportZipClicked()
+                    },
+                )
+            }
+        }
         IconButton(
             onClick = onSearchClicked
         ) {
