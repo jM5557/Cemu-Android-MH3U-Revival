@@ -206,6 +206,7 @@ extern uint64 ppcMainThreadDECCycleStart; // at which cycle the dec register was
 void PPCTimer_init();
 void PPCTimer_waitForInit();
 uint64 PPCTimer_getFromRDTSC();
+void PPCTimer_setPaused(bool paused); // freezes the console clock (pause emulation)
 
 uint64 PPCTimer_microsecondsToTsc(uint64 us);
 uint64 PPCTimer_tscToMicroseconds(uint64 us);

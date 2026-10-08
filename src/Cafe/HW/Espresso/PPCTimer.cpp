@@ -122,11 +122,40 @@ void PPCTimer_waitForInit()
 }
 
 FSpinlock sTimerSpinlock;
+bool sTimerPaused = false; // guarded by sTimerSpinlock
+
+static uint64 PPCTimer_updateLocked();
 
 // thread safe
 uint64 PPCTimer_getFromRDTSC()
 {
 	sTimerSpinlock.lock();
+	const uint64 ticks = sTimerPaused ? _tickSummary : PPCTimer_updateLocked();
+	sTimerSpinlock.unlock();
+	return ticks;
+}
+
+// While the title is paused the console clock stands still, so the game does not see the pause
+// as time that passed (quest timers and the like would otherwise jump ahead on resume).
+void PPCTimer_setPaused(bool paused)
+{
+	sTimerSpinlock.lock();
+	if (paused && !sTimerPaused)
+	{
+		PPCTimer_updateLocked(); // count everything up to the pause
+		sTimerPaused = true;
+	}
+	else if (!paused && sTimerPaused)
+	{
+		_mm_mfence();
+		_rdtscLastMeasure = __rdtsc(); // continue from now: the paused time is skipped
+		sTimerPaused = false;
+	}
+	sTimerSpinlock.unlock();
+}
+
+static uint64 PPCTimer_updateLocked()
+{
 	_mm_mfence();
 	uint64 rdtscCurrentMeasure = __rdtsc();
 	uint64 rdtscDif = rdtscCurrentMeasure - _rdtscLastMeasure;
@@ -162,6 +191,5 @@ uint64 PPCTimer_getFromRDTSC()
 
 	_tickSummary += elapsedTick;
 
-	sTimerSpinlock.unlock();
 	return _tickSummary;
 }

@@ -925,6 +925,7 @@ namespace CafeSystem
 		sTitlePaused = true;
 
 		coreinit::SuspendActiveThreads();
+		PPCTimer_setPaused(true); // the console clock stops too
 		// Stop the audio streams too, so the output device can idle. They start again by
 		// themselves once the game produces sound after resuming.
 		snd_core::AXOut_updateDevicePlayState(false);
@@ -939,6 +940,7 @@ namespace CafeSystem
 
 		sTitlePaused = false;
 
+		PPCTimer_setPaused(false);
 		coreinit::ResumeActiveThreads();
 	}
 

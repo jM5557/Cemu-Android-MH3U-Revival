@@ -78,6 +78,9 @@ void LatteTiming_signalVsync()
 
 	if (!LatteGPUState.gx2InitCalled)
 		return;
+	// no vsyncs while paused: the game must not count frames it never ran
+	if (CafeSystem::IsTitlePaused())
+		return;
 	s_vsyncIntervalCounter++;
 	uint32 swapInterval = 1;
 	if (LatteGPUState.sharedArea)
