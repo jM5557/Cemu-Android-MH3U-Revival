@@ -239,8 +239,34 @@ namespace SaveStates
 		return OperationResult::Ok();
 	}
 
+	// Pause (CafeSystem::PauseTitle) works by suspending every guest thread, and the suspend
+	// counts are part of the thread state a capture records. A state saved while paused would
+	// load frozen, and a load while paused would have the later resume release threads the
+	// game suspended itself. So the pause is lifted for the capture or restore and put back
+	// afterwards. Declare it before the QuiesceScope, so it is released after it.
+	class LiftPauseScope
+	{
+	  public:
+		LiftPauseScope() : m_wasPaused(CafeSystem::IsTitlePaused())
+		{
+			if (m_wasPaused)
+				CafeSystem::ResumeTitle();
+		}
+		~LiftPauseScope()
+		{
+			if (m_wasPaused)
+				CafeSystem::PauseTitle();
+		}
+		LiftPauseScope(const LiftPauseScope&) = delete;
+		LiftPauseScope& operator=(const LiftPauseScope&) = delete;
+
+	  private:
+		bool m_wasPaused;
+	};
+
 	OperationResult SaveToFile(const fs::path& path)
 	{
+		LiftPauseScope liftPause;
 		std::vector<uint8> body;
 		StateHead head;
 
@@ -397,6 +423,7 @@ namespace SaveStates
 	// snapshot describes exactly the world this load is about to replace.
 	static OperationResult ApplyStateBody(std::vector<uint8>& body)
 	{
+		LiftPauseScope liftPause;
 		{
 			QuiesceScope quiesce;
 			if (!quiesce.IsHeld())
