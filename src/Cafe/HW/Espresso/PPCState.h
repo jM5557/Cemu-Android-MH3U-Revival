@@ -65,15 +65,6 @@ struct PPCInterpreter_t
 	// LWARX and STWCX
 	uint32 reservedMemAddr;
 	uint32 reservedMemValue;
-	// Guest stack pointer captured on entry to the current HLE call.
-	//
-	// Several HLE functions allocate guest-stack scratch via StackAllocator, which moves
-	// gpr[1] down and only restores it when the call returns. A thread that blocks in such a
-	// call therefore has a stored stack pointer below its real one. Save states restart a
-	// blocked call from the beginning, so they need the value from before that adjustment --
-	// restarting with the blocked value leaks the scratch area, leaving guest code to read its
-	// saved link register from the wrong slot when it eventually returns.
-	uint32 hleEntryStackPointer;
 	// temporary storage for recompiler
 	FPR_t temporaryFPR[8];
 	uint32 temporaryGPR[4]; // deprecated, refactor backend dependency on this away
@@ -113,6 +104,18 @@ struct PPCInterpreter_t
 
 	// extra variables for recompiler
 	void* rspTemp;
+	// Guest stack pointer captured on entry to the current HLE call.
+	//
+	// Several HLE functions allocate guest-stack scratch via StackAllocator, which moves
+	// gpr[1] down and only restores it when the call returns. A thread that blocks in such a
+	// call therefore has a stored stack pointer below its real one. Save states restart a
+	// blocked call from the beginning, so they need the value from before that adjustment --
+	// restarting with the blocked value leaks the scratch area, leaving guest code to read its
+	// saved link register from the wrong slot when it eventually returns.
+	//
+	// Kept last: the recompilers address the fields above by offset, and the AArch64 backend
+	// needs temporaryFPR 16-byte aligned.
+	uint32 hleEntryStackPointer;
 };
 
 // parameter access (legacy C style)
