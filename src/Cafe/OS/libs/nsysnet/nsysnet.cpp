@@ -193,6 +193,8 @@ typedef struct
 	SOCKET s;
 	// socket options
 	bool isNonBlocking;
+	// the host socket belongs to nlibcurl, which closes it itself
+	bool isShared;
 }virtualSocket_t;
 
 typedef struct
@@ -244,6 +246,48 @@ sint32 _getFreeSocketHandle()
 	return 0;
 }
 
+// Any open socket means the game is talking to something over the network. A pause stops it
+// answering, and a save state can neither hold a connection nor bring one back, so both are
+// refused while this is nonzero (see CafeSystem::IsTitleOnline).
+sint32 nsysnet_getOpenSocketCount()
+{
+	sint32 count = 0;
+	for (sint32 i = 0; i < WU_SOCKET_LIMIT; i++)
+	{
+		if (virtualSocketTable[i])
+			count++;
+	}
+	return count;
+}
+
+// Logs when that lock turns on and off
+static void _logOnlineChange()
+{
+	static bool wasOnline = false;
+	const bool online = nsysnet_getOpenSocketCount() > 0;
+	if (online == wasOnline)
+		return;
+	wasOnline = online;
+	cemuLog_log(LogType::Force, online ? "Network: the game opened a socket, pause and save states are off until it closes them" : "Network: the game closed its sockets, pause and save states are back");
+}
+
+// "Close game" skips the game's own socketclose() calls, so without this its sockets would stay
+// open, and bound to their ports, into the next title. Called once guest threads are gone.
+void nsysnet_closeAllSockets()
+{
+	for (sint32 i = 0; i < WU_SOCKET_LIMIT; i++)
+	{
+		virtualSocket_t* vs = virtualSocketTable[i];
+		if (!vs)
+			continue;
+		if (!vs->isShared)
+			closesocket(vs->s);
+		free(vs);
+		virtualSocketTable[i] = nullptr;
+	}
+	_logOnlineChange();
+}
+
 #if BOOST_OS_WINDOWS
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR,12)
 #endif // BOOST_OS_WINDOWS
@@ -263,6 +307,7 @@ WUSOCKET nsysnet_createVirtualSocket(sint32 family, sint32 type, sint32 protocol
 	vs->protocol = protocol;
 	vs->handle = s;
 	virtualSocketTable[s - 1] = vs;
+	_logOnlineChange();
 	// init host socket
 	vs->s = socket(family, type, protocol);
 	#if BOOST_OS_WINDOWS
@@ -277,7 +322,7 @@ WUSOCKET nsysnet_createVirtualSocket(sint32 family, sint32 type, sint32 protocol
 	return vs->handle;
 }
 
-WUSOCKET nsysnet_createVirtualSocketFromExistingSocket(SOCKET existingSocket)
+WUSOCKET nsysnet_createVirtualSocketFromExistingSocket(SOCKET existingSocket, bool isShared)
 {
 	cemuLog_logDebug(LogType::Force, "nsysnet_createVirtualSocketFromExistingSocket - incomplete");
 
@@ -319,8 +364,10 @@ WUSOCKET nsysnet_createVirtualSocketFromExistingSocket(SOCKET existingSocket)
 #endif
 
 	vs->handle = s;
+	vs->isShared = isShared;
 	virtualSocketTable[s - 1] = vs;
 	vs->s = existingSocket;
+	_logOnlineChange();
 	return vs->handle;
 }
 
@@ -333,6 +380,7 @@ void nsysnet_notifyCloseSharedSocket(SOCKET existingSocket)
 			// remove entry
 			free(virtualSocketTable[i]);
 			virtualSocketTable[i] = nullptr;
+			_logOnlineChange();
 			return;
 		}
 	}
@@ -457,6 +505,7 @@ void nsysnetExport_socketclose(PPCInterpreter_t* hCPU)
 		closesocket(vs->s);
 		free(vs);
 		virtualSocketTable[s - 1] = NULL;
+		_logOnlineChange();
 	}
 	osLib_returnFromFunction(hCPU, 0);
 }

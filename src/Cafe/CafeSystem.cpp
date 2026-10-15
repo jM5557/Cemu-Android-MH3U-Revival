@@ -88,6 +88,10 @@ uint32 currentUpdatedApplicationHash = 0;
 
 bool isLaunchTypeELF = false;
 
+// nsysnet.h brings in WinSock2.h, which does not mix with what this file includes before it
+sint32 nsysnet_getOpenSocketCount();
+void nsysnet_closeAllSockets();
+
 MPTR _entryPoint = MPTR_NULL;
 
 uint32 generateHashFromRawRPXData(uint8* rpxData, sint32 size)
@@ -921,7 +925,11 @@ namespace CafeSystem
 		{
 			return;
 		}
-
+		if (IsTitleOnline())
+		{
+			cemuLog_log(LogType::Force, "Pause refused: the game is online");
+			return;
+		}
 		sTitlePaused = true;
 
 		coreinit::SuspendActiveThreads();
@@ -947,6 +955,11 @@ namespace CafeSystem
 	bool IsTitlePaused()
 	{
 		return sTitlePaused;
+	}
+
+	bool IsTitleOnline()
+	{
+		return sSystemRunning && nsysnet_getOpenSocketCount() > 0;
 	}
 
 	TitleId GetForegroundTitleId()
@@ -1071,16 +1084,18 @@ namespace CafeSystem
 	{
 		if(!sSystemRunning)
 			return;
-        CheatManager::OnTitleStop();
-        coreinit::OSSchedulerEnd();
-        Latte_Stop();
-        // reset Cafe OS userspace modules
-        snd_core::reset();
-        coreinit::OSAlarm_Shutdown();
-        GX2::_GX2DriverReset();
-        nn::save::ResetToDefaultState();
-        coreinit::__OSDeleteAllActivePPCThreads();
-        RPLLoader_UnloadAll();
+		ResumeTitle(); // shut down from a running state
+		CheatManager::OnTitleStop();
+		coreinit::OSSchedulerEnd();
+		Latte_Stop();
+		// reset Cafe OS userspace modules
+		snd_core::reset();
+		coreinit::OSAlarm_Shutdown();
+		GX2::_GX2DriverReset();
+		nn::save::ResetToDefaultState();
+		coreinit::__OSDeleteAllActivePPCThreads();
+		RPLLoader_UnloadAll();
+		nsysnet_closeAllSockets();
 		for(auto it = s_iosuModules.rbegin(); it != s_iosuModules.rend(); ++it)
 			(*it)->TitleStop();
         // reset Cemu subsystems

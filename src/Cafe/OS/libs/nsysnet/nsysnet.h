@@ -13,8 +13,10 @@
 
 typedef signed int WUSOCKET;
 
-WUSOCKET nsysnet_createVirtualSocketFromExistingSocket(SOCKET existingSocket);
+WUSOCKET nsysnet_createVirtualSocketFromExistingSocket(SOCKET existingSocket, bool isShared = false);
 void nsysnet_notifyCloseSharedSocket(SOCKET existingSocket);
+sint32 nsysnet_getOpenSocketCount();
+void nsysnet_closeAllSockets();
 
 struct wu_fd_set
 {

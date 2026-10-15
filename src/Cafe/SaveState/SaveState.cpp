@@ -239,6 +239,12 @@ namespace SaveStates
 		return OperationResult::Ok();
 	}
 
+	// See CafeSystem::IsTitleOnline. Checked again once the world is stopped, since the game could
+	// open a socket in between.
+	static constexpr const char* kOnlineMessage =
+		"Save states are unavailable while the game is online: a state cannot hold the connection, "
+		"so saving or loading would drop you from the session. Go offline in the game first.";
+
 	// Pause (CafeSystem::PauseTitle) works by suspending every guest thread, and the suspend
 	// counts are part of the thread state a capture records. A state saved while paused would
 	// load frozen, and a load while paused would have the later resume release threads the
@@ -270,6 +276,8 @@ namespace SaveStates
 
 	OperationResult SaveToFile(const fs::path& path)
 	{
+		if (CafeSystem::IsTitleOnline())
+			return OperationResult::Fail(kOnlineMessage);
 		LiftPauseScope liftPause(true);
 		std::vector<uint8> body;
 		StateHead head;
@@ -278,6 +286,8 @@ namespace SaveStates
 			QuiesceScope quiesce;
 			if (!quiesce.IsHeld())
 				return OperationResult::Fail(GetQuiesceStatusMessage(quiesce.GetStatus()));
+			if (CafeSystem::IsTitleOnline())
+				return OperationResult::Fail(kOnlineMessage);
 
 			head.fingerprint = BuildCurrentFingerprint();
 			head.unixTimestamp = (uint64)std::time(nullptr);
@@ -370,6 +380,9 @@ namespace SaveStates
 
 	OperationResult LoadFromFile(const fs::path& path)
 	{
+		// before reading and inflating what can be hundreds of megabytes
+		if (CafeSystem::IsTitleOnline())
+			return OperationResult::Fail(kOnlineMessage);
 		std::ifstream file(path, std::ios::binary);
 		StateFileHeader fileHeader{};
 		StateHead head;
@@ -432,6 +445,8 @@ namespace SaveStates
 			QuiesceScope quiesce;
 			if (!quiesce.IsHeld())
 				return OperationResult::Fail(GetQuiesceStatusMessage(quiesce.GetStatus()));
+			if (CafeSystem::IsTitleOnline())
+				return OperationResult::Fail(kOnlineMessage);
 
 			std::vector<uint8> undoBody;
 			undoBody.reserve(64 * 1024 * 1024);
@@ -501,6 +516,8 @@ namespace SaveStates
 	{
 		if (s_undoBody.empty())
 			return OperationResult::Fail("There is no state to undo to");
+		if (CafeSystem::IsTitleOnline())
+			return OperationResult::Fail(kOnlineMessage);
 		// The snapshot describes the world that was running when it was taken. Closing a
 		// title and starting another leaves it behind, and applying it then would drop one
 		// game's memory into another.
@@ -512,6 +529,11 @@ namespace SaveStates
 		}
 		std::vector<uint8> body;
 		body.swap(s_undoBody);
-		return ApplyStateBody(body);
+		OperationResult result = ApplyStateBody(body);
+		// Refused before anything was applied (the world would not stop, or the game went online
+		// in the meantime): the snapshot is still the way back, so keep it.
+		if (!result.success && s_undoBody.empty())
+			s_undoBody.swap(body);
+		return result;
 	}
 } // namespace SaveStates

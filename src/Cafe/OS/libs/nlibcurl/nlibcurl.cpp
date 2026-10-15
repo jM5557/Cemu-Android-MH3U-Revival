@@ -662,7 +662,7 @@ void export_curl_multi_fdset(PPCInterpreter_t* hCPU)
 	{
 		sint32 wuSocket = nsysnet_getVirtualSocketHandleFromHostHandle(s);
 		if (wuSocket < 0)
-			wuSocket = nsysnet_createVirtualSocketFromExistingSocket(s);
+			wuSocket = nsysnet_createVirtualSocketFromExistingSocket(s, true);
 		if (wuSocket >= 0)
 		{
 			c_maxFD = std::max(wuSocket, c_maxFD);
