@@ -8,6 +8,25 @@
 #include <sys/time.h>
 #include <sys/socket.h>
 #endif
+#if !BOOST_OS_WINDOWS
+#include <poll.h>
+#endif
+
+// true once the socket has data (or an error) to read, false if timeoutMs passes first
+static bool WaitReadable(boost::asio::ip::udp::socket::native_handle_type socket, int timeoutMs)
+{
+#if BOOST_OS_WINDOWS
+	WSAPOLLFD pfd{};
+	pfd.fd = socket;
+	pfd.events = POLLRDNORM;
+	return WSAPoll(&pfd, 1, timeoutMs) != 0;
+#else
+	pollfd pfd{};
+	pfd.fd = socket;
+	pfd.events = POLLIN;
+	return poll(&pfd, 1, timeoutMs) != 0;
+#endif
+}
 
 DSUControllerProvider::DSUControllerProvider()
 	: base_type(), m_uid(rand()), m_socket(m_io_service)
@@ -258,6 +277,11 @@ void DSUControllerProvider::reader_thread()
 		std::array<char, 100> recv_buf; // NOLINT(cppcoreguidelines-pro-type-member-init, hicpp-member-init)
 		boost::asio::ip::udp::endpoint sender_endpoint;
 		boost::system::error_code ec{};
+		// Wait with a timeout instead of blocking in receive_from until a packet comes. Shutdown
+		// wakes the reader with a packet sent to itself over loopback, but on a PC where something
+		// drops that packet the reader never returned, and Cemu stayed running with no window.
+		if (!WaitReadable(m_socket.native_handle(), 500))
+			continue;
 		const size_t len = m_socket.receive_from(boost::asio::buffer(recv_buf), sender_endpoint, 0, ec);
 		if (ec)
 		{
