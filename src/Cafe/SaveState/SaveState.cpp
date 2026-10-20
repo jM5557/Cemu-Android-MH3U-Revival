@@ -143,6 +143,29 @@ namespace SaveStates
 		s.DoMarker(kMarkerMEMR, "MMU-end");
 	}
 
+	// Sizes a capture buffer for the largest body this world can produce, so it never grows while
+	// the world is stopped. Growing by doubling would copy hundreds of megabytes and briefly hold
+	// one and a half copies of the state, which on a phone is reason enough for the system to kill
+	// the app. Reserving is address space only: pages are committed as the capture writes them, so
+	// what goes unused costs nothing. Falls back to a modest reservation if even that is refused.
+	static void ReserveCaptureBuffer(std::vector<uint8>& buffer)
+	{
+		uint64 bound = 16 * 1024 * 1024; // every chunk besides MEMR is small
+		for (auto* range : memory_getMMURanges())
+		{
+			if (range->isMapped())
+				bound += (uint64)range->getSize() + range->getSize() / kMemoryBlockSize + 64;
+		}
+		try
+		{
+			buffer.reserve((size_t)bound);
+		}
+		catch (const std::bad_alloc&)
+		{
+			buffer.reserve(64 * 1024 * 1024);
+		}
+	}
+
 	// The single bidirectional pass over every participating subsystem.
 	static void DoStateBody(StateStream& s)
 	{
@@ -348,9 +371,7 @@ namespace SaveStates
 			head.fingerprint = BuildCurrentFingerprint();
 			head.unixTimestamp = (uint64)std::time(nullptr);
 
-			// Reserve up front so the capture does not repeatedly reallocate a buffer
-			// that can reach hundreds of megabytes while the world is stopped.
-			body.reserve(64 * 1024 * 1024);
+			ReserveCaptureBuffer(body);
 
 			StateStream stream = StateStream::MakeWriter(body);
 			DoStateBody(stream);
@@ -571,7 +592,7 @@ namespace SaveStates
 			if (CafeSystem::IsTitleOnline())
 				return OperationResult::Fail(kOnlineMessage);
 
-			undoBody.reserve(64 * 1024 * 1024);
+			ReserveCaptureBuffer(undoBody);
 			StateStream undoStream = StateStream::MakeWriter(undoBody);
 			DoStateBody(undoStream);
 			// A failed snapshot is not a reason to refuse the load the user asked for, but
