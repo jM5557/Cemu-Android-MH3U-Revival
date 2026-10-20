@@ -127,6 +127,8 @@ namespace coreinit
 		for (sint32 i = 0; i < activeThreadCount; i++)
 		{
 			auto thread = reinterpret_cast<OSThread_t*>(memory_getPointerFromVirtualOffset(activeThread[i]));
+			if (thread->state == OSThread_t::THREAD_STATE::STATE_NONE || thread->state == OSThread_t::THREAD_STATE::STATE_MORIBUND)
+				continue;
 			__OSSuspendThreadNolock(thread);
 		}
 
@@ -146,7 +148,12 @@ namespace coreinit
 		for (sint32 i = 0; i < activeThreadCount; i++)
 		{
 			auto thread = reinterpret_cast<OSThread_t*>(memory_getPointerFromVirtualOffset(activeThread[i]));
-			__OSResumeThreadInternal(thread, 1);
+			// Only what SuspendActiveThreads suspended: no game code ran in between, so skip the
+			// same threads, and never resume one the game left with a zero suspend count.
+			if (thread->state == OSThread_t::THREAD_STATE::STATE_NONE || thread->state == OSThread_t::THREAD_STATE::STATE_MORIBUND)
+				continue;
+			if (thread->suspendCounter > 0)
+				__OSResumeThreadInternal(thread, 1);
 		}
 
 		__OSUnlockScheduler();
