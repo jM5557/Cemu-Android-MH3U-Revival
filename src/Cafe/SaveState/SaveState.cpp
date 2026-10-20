@@ -19,6 +19,7 @@
 #include <zstd.h>
 #include <ctime>
 #include <fstream>
+#include <functional>
 
 namespace SaveStates
 {
@@ -184,6 +185,51 @@ namespace SaveStates
 		s.DoMarker(kMarkerEND, "body-end");
 	}
 
+	struct ZstdCCtxDeleter
+	{
+		void operator()(ZSTD_CCtx* ctx) const { ZSTD_freeCCtx(ctx); }
+	};
+	struct ZstdDCtxDeleter
+	{
+		void operator()(ZSTD_DCtx* ctx) const { ZSTD_freeDCtx(ctx); }
+	};
+
+	// Compresses through a small window rather than into a second buffer the size of the
+	// input. A body is hundreds of megabytes, and on a phone holding it twice over is the
+	// difference between saving and the system killing the app for memory.
+	static bool CompressStreaming(const std::vector<uint8>& input, int level, std::string& error,
+								  const std::function<bool(const uint8*, size_t)>& sink)
+	{
+		std::unique_ptr<ZSTD_CCtx, ZstdCCtxDeleter> cctx(ZSTD_createCCtx());
+		if (!cctx)
+		{
+			error = "Compression failed: out of memory";
+			return false;
+		}
+		ZSTD_CCtx_setParameter(cctx.get(), ZSTD_c_compressionLevel, level);
+		// records the size in the frame header, which the reader checks against the file header
+		ZSTD_CCtx_setPledgedSrcSize(cctx.get(), input.size());
+		std::vector<uint8> window(ZSTD_CStreamOutSize());
+		ZSTD_inBuffer in{input.data(), input.size(), 0};
+		while (true)
+		{
+			ZSTD_outBuffer out{window.data(), window.size(), 0};
+			const size_t remaining = ZSTD_compressStream2(cctx.get(), &out, &in, ZSTD_e_end);
+			if (ZSTD_isError(remaining))
+			{
+				error = fmt::format("Compression failed: {}", ZSTD_getErrorName(remaining));
+				return false;
+			}
+			if (out.pos > 0 && !sink(window.data(), out.pos))
+			{
+				error = "Failed while writing state data (out of disk space?)";
+				return false;
+			}
+			if (remaining == 0)
+				return true;
+		}
+	}
+
 	static OperationResult WriteStateFile(const fs::path& path, StateHead& head, const std::vector<uint8>& body)
 	{
 		std::vector<uint8> headBuffer;
@@ -192,19 +238,13 @@ namespace SaveStates
 		if (headStream.HasError())
 			return OperationResult::Fail(headStream.GetError());
 
-		const size_t bound = ZSTD_compressBound(body.size());
-		std::vector<uint8> compressed(bound);
-		const size_t compressedSize = ZSTD_compress(compressed.data(), bound, body.data(), body.size(), 3);
-		if (ZSTD_isError(compressedSize))
-			return OperationResult::Fail(fmt::format("Compression failed: {}", ZSTD_getErrorName(compressedSize)));
-
 		StateFileHeader fileHeader{};
 		fileHeader.magic = kStateFileMagic;
 		fileHeader.formatVersion = kStateFormatVersion;
 		fileHeader.flags = 0;
 		fileHeader.headSize = (uint32)headBuffer.size();
 		fileHeader.bodySizeUncompressed = (uint64)body.size();
-		fileHeader.bodySizeCompressed = (uint64)compressedSize;
+		fileHeader.bodySizeCompressed = 0; // filled in once the body has been streamed out
 
 		std::error_code ec;
 		fs::create_directories(path.parent_path(), ec);
@@ -221,12 +261,26 @@ namespace SaveStates
 			file.write((const char*)&fileHeader, sizeof(fileHeader));
 			if (!headBuffer.empty())
 				file.write((const char*)headBuffer.data(), (std::streamsize)headBuffer.size());
-			file.write((const char*)compressed.data(), (std::streamsize)compressedSize);
-			if (!file.good())
+
+			std::string error;
+			uint64 compressedSize = 0;
+			const bool compressed = CompressStreaming(body, 3, error, [&](const uint8* data, size_t size) {
+				file.write((const char*)data, (std::streamsize)size);
+				compressedSize += size;
+				return file.good();
+			});
+			if (compressed)
+			{
+				fileHeader.bodySizeCompressed = compressedSize;
+				file.seekp(0);
+				file.write((const char*)&fileHeader, sizeof(fileHeader));
+				file.flush();
+			}
+			if (!compressed || !file.good())
 			{
 				file.close();
 				fs::remove(tempPath, ec);
-				return OperationResult::Fail("Failed while writing state data (out of disk space?)");
+				return OperationResult::Fail(compressed ? "Failed while writing state data (out of disk space?)" : error);
 			}
 		}
 
@@ -278,11 +332,13 @@ namespace SaveStates
 	{
 		if (CafeSystem::IsTitleOnline())
 			return OperationResult::Fail(kOnlineMessage);
-		LiftPauseScope liftPause(true);
 		std::vector<uint8> body;
 		StateHead head;
 
 		{
+			// No pause or resume from elsewhere until the world runs again (see GetPauseMutex)
+			std::unique_lock pauseLock(CafeSystem::GetPauseMutex());
+			LiftPauseScope liftPause(true);
 			QuiesceScope quiesce;
 			if (!quiesce.IsHeld())
 				return OperationResult::Fail(GetQuiesceStatusMessage(quiesce.GetStatus()));
@@ -394,20 +450,50 @@ namespace SaveStates
 		if (!incompatibility.empty())
 			return OperationResult::Fail(incompatibility);
 
-		std::vector<uint8> compressed((size_t)fileHeader.bodySizeCompressed);
-		if (!compressed.empty())
+		// Guest memory is a 4 GiB space, so a larger body can only be a damaged file, and
+		// believing it would mean attempting the allocation.
+		if (fileHeader.bodySizeUncompressed > (4ull << 30) || fileHeader.bodySizeCompressed == 0)
+			return OperationResult::Fail("State file is damaged (impossible body size)");
+
+		std::vector<uint8> body;
+		try
 		{
-			file.read((char*)compressed.data(), (std::streamsize)compressed.size());
+			body.resize((size_t)fileHeader.bodySizeUncompressed);
+		}
+		catch (const std::bad_alloc&)
+		{
+			return OperationResult::Fail("Not enough free memory to load this state");
+		}
+
+		// Inflated straight from the file into the body, through a small window, rather than
+		// reading the whole compressed body into memory first.
+		std::unique_ptr<ZSTD_DCtx, ZstdDCtxDeleter> dctx(ZSTD_createDCtx());
+		if (!dctx)
+			return OperationResult::Fail("Decompression failed: out of memory");
+		std::vector<uint8> window(ZSTD_DStreamInSize());
+		ZSTD_outBuffer out{body.data(), body.size(), 0};
+		uint64 compressedRemaining = fileHeader.bodySizeCompressed;
+		size_t lastResult = 1;
+		while (compressedRemaining > 0)
+		{
+			const size_t chunk = (size_t)std::min<uint64>(compressedRemaining, window.size());
+			file.read((char*)window.data(), (std::streamsize)chunk);
 			if (!file.good())
 				return OperationResult::Fail("State file is truncated (body)");
+			compressedRemaining -= chunk;
+			ZSTD_inBuffer in{window.data(), chunk, 0};
+			while (in.pos < in.size)
+			{
+				lastResult = ZSTD_decompressStream(dctx.get(), &out, &in);
+				if (ZSTD_isError(lastResult))
+					return OperationResult::Fail(fmt::format("Decompression failed: {}", ZSTD_getErrorName(lastResult)));
+				// more input with the body already full, or after the frame ended
+				if (in.pos < in.size && (out.pos == out.size || lastResult == 0))
+					return OperationResult::Fail("State body size mismatch");
+			}
 		}
 		file.close();
-
-		std::vector<uint8> body((size_t)fileHeader.bodySizeUncompressed);
-		const size_t decompressedSize = ZSTD_decompress(body.data(), body.size(), compressed.data(), compressed.size());
-		if (ZSTD_isError(decompressedSize))
-			return OperationResult::Fail(fmt::format("Decompression failed: {}", ZSTD_getErrorName(decompressedSize)));
-		if (decompressedSize != body.size())
+		if (lastResult != 0 || out.pos != body.size())
 			return OperationResult::Fail("State body size mismatch");
 
 		return ApplyStateBody(body);
@@ -418,18 +504,50 @@ namespace SaveStates
 	// Kept uncompressed and never written to disk: it exists to undo an accident within the
 	// same session, which is the only window in which the live session it describes is still
 	// the one you want back.
-	static std::vector<uint8> s_undoBody;
+	//
+	// Held compressed (zstd's fastest level). Raw it is as large as the session itself, and
+	// keeping that for as long as Cemu runs would leave a phone hundreds of megabytes short for
+	// the rest of the session. Compressing costs a moment after a load, with the game already
+	// running again.
+	static std::vector<uint8> s_undoCompressed;
+	static uint64 s_undoSize = 0;
 	static StateFingerprint s_undoFingerprint;
 
 	bool HasUndoState()
 	{
-		return !s_undoBody.empty();
+		return !s_undoCompressed.empty();
 	}
 
 	void DiscardUndoState()
 	{
-		s_undoBody.clear();
-		s_undoBody.shrink_to_fit();
+		s_undoCompressed.clear();
+		s_undoCompressed.shrink_to_fit();
+		s_undoSize = 0;
+	}
+
+	// Replaces the undo snapshot with `raw`, which is released either way.
+	static void StoreUndoState(std::vector<uint8>& raw, const StateFingerprint& fingerprint)
+	{
+		DiscardUndoState();
+		std::vector<uint8> compressed;
+		compressed.reserve(raw.size() / 4);
+		std::string error;
+		const bool ok = CompressStreaming(raw, 1, error, [&](const uint8* data, size_t size) {
+			compressed.insert(compressed.end(), data, data + size);
+			return true;
+		});
+		const uint64 rawSize = raw.size();
+		raw.clear();
+		raw.shrink_to_fit();
+		if (!ok)
+		{
+			cemuLog_log(LogType::Force, "Save state: could not keep undo snapshot: {}", error);
+			return;
+		}
+		compressed.shrink_to_fit();
+		s_undoCompressed = std::move(compressed);
+		s_undoSize = rawSize;
+		s_undoFingerprint = fingerprint;
 	}
 
 	// Applies an already-decompressed, already-fingerprint-checked body.
@@ -440,22 +558,26 @@ namespace SaveStates
 	// snapshot describes exactly the world this load is about to replace.
 	static OperationResult ApplyStateBody(std::vector<uint8>& body)
 	{
-		LiftPauseScope liftPause(false);
+		std::vector<uint8> undoBody;
+		bool undoCaptured = false;
+		OperationResult result = OperationResult::Ok();
 		{
+			// No pause or resume from elsewhere until the world runs again (see GetPauseMutex)
+			std::unique_lock pauseLock(CafeSystem::GetPauseMutex());
+			LiftPauseScope liftPause(false);
 			QuiesceScope quiesce;
 			if (!quiesce.IsHeld())
 				return OperationResult::Fail(GetQuiesceStatusMessage(quiesce.GetStatus()));
 			if (CafeSystem::IsTitleOnline())
 				return OperationResult::Fail(kOnlineMessage);
 
-			std::vector<uint8> undoBody;
 			undoBody.reserve(64 * 1024 * 1024);
 			StateStream undoStream = StateStream::MakeWriter(undoBody);
 			DoStateBody(undoStream);
 			// A failed snapshot is not a reason to refuse the load the user asked for, but
 			// it does mean there is nothing to undo to, and silently keeping a stale one
 			// would be worse than having none.
-			const bool undoCaptured = !undoStream.HasError();
+			undoCaptured = !undoStream.HasError();
 			if (!undoCaptured)
 				cemuLog_log(LogType::Force, "Save state: could not capture undo snapshot: {}", undoStream.GetError());
 
@@ -464,44 +586,50 @@ namespace SaveStates
 			if (stream.HasError())
 			{
 				// Guest memory is partially overwritten at this point. The snapshot taken
-				// above is the way back, so keep it even though the load failed.
-				if (undoCaptured)
-				{
-					s_undoBody = std::move(undoBody);
-					s_undoFingerprint = BuildCurrentFingerprint();
-				}
-				return OperationResult::Fail(fmt::format("State load failed after modifying memory: {}", stream.GetError()));
+				// above is the way back, so it is kept even though the load failed.
+				result = OperationResult::Fail(fmt::format("State load failed after modifying memory: {}", stream.GetError()));
 			}
-			s_undoBody = undoCaptured ? std::move(undoBody) : std::vector<uint8>{};
-			if (undoCaptured)
-				s_undoFingerprint = BuildCurrentFingerprint();
+			else
+			{
+				// Host residue that is rebuilt rather than serialized.
+				coreinit::__OSRebuildHostThreadsAfterStateLoad();
+				// Threads blocked inside an HLE call cannot resume the host continuation the
+				// fiber rebuild just discarded, so they are restarted at the call instead.
+				// Must run before the run queue counts are rebuilt: this is what puts threads
+				// back on the run queues that those counts are derived from.
+				coreinit::__OSRestartHLEBlockedThreadsAfterStateLoad();
+				// Must happen before the scope releases the cores: they consult these counters
+				// the moment they leave the barrier, and a stale count means they go straight
+				// back to sleep with a full run queue.
+				coreinit::__OSRebuildRunQueueCountsAfterStateLoad();
 
-			// Host residue that is rebuilt rather than serialized.
-			coreinit::__OSRebuildHostThreadsAfterStateLoad();
-			// Threads blocked inside an HLE call cannot resume the host continuation the
-			// fiber rebuild just discarded, so they are restarted at the call instead.
-			// Must run before the run queue counts are rebuilt: this is what puts threads
-			// back on the run queues that those counts are derived from.
-			coreinit::__OSRestartHLEBlockedThreadsAfterStateLoad();
-			// Must happen before the scope releases the cores: they consult these counters
-			// the moment they leave the barrier, and a stale count means they go straight
-			// back to sleep with a full run queue.
-			coreinit::__OSRebuildRunQueueCountsAfterStateLoad();
+				// Translated code may no longer match the restored guest memory. Dropping the
+				// whole cache costs a few seconds of re-JIT and carries no correctness risk,
+				// which is the same policy Dolphin applies to its JIT cache.
+				PPCRecompiler_invalidateRange(0, 0xFFFFFFFF);
 
-			// Translated code may no longer match the restored guest memory. Dropping the
-			// whole cache costs a few seconds of re-JIT and carries no correctness risk,
-			// which is the same policy Dolphin applies to its JIT cache.
-			PPCRecompiler_invalidateRange(0, 0xFFFFFFFF);
-
-			// Same argument on the GPU side: the texture, buffer and index caches are keyed
-			// by guest address, and every one of those addresses just changed underneath
-			// them. The drop is performed by the parked GPU thread and completes before
-			// this scope releases the cores, so no drawcall ever sees a stale cache.
-			RequestGpuCacheDropOnRelease();
+				// Same argument on the GPU side: the texture, buffer and index caches are keyed
+				// by guest address, and every one of those addresses just changed underneath
+				// them. The drop is performed by the parked GPU thread and completes before
+				// this scope releases the cores, so no drawcall ever sees a stale cache.
+				RequestGpuCacheDropOnRelease();
+			}
 		}
+		// The world is running again. The state just applied is no longer needed, and freeing
+		// it before compressing the undo snapshot keeps the peak lower.
+		const size_t restoredSize = body.size();
+		body.clear();
+		body.shrink_to_fit();
 
+		if (undoCaptured)
+			StoreUndoState(undoBody, BuildCurrentFingerprint());
+		else if (result.success)
+			DiscardUndoState(); // it describes a world this load just replaced
+
+		if (!result.success)
+			return result;
 		cemuLog_log(LogType::Force, "Save state: restored {} MiB of guest state, rebuilt host threads",
-					body.size() / (1024 * 1024));
+					restoredSize / (1024 * 1024));
 		// Started after the cores are released so it observes the world actually running
 		// rather than the barrier.
 		coreinit::__OSStartStallWatchdogAfterStateLoad();
@@ -510,11 +638,11 @@ namespace SaveStates
 
 	// Restores the session the last load replaced, and keeps what it just replaced in turn,
 	// so undo toggles rather than being a one-shot. ApplyStateBody() does the second half by
-	// snapshotting before it applies anything; the swap below only has to avoid handing it
-	// the buffer it is about to overwrite.
+	// snapshotting before it applies anything, and leaves the current snapshot alone when it
+	// refuses before touching the world.
 	OperationResult UndoLoadState()
 	{
-		if (s_undoBody.empty())
+		if (s_undoCompressed.empty())
 			return OperationResult::Fail("There is no state to undo to");
 		if (CafeSystem::IsTitleOnline())
 			return OperationResult::Fail(kOnlineMessage);
@@ -528,12 +656,20 @@ namespace SaveStates
 			return OperationResult::Fail(incompatibility);
 		}
 		std::vector<uint8> body;
-		body.swap(s_undoBody);
-		OperationResult result = ApplyStateBody(body);
-		// Refused before anything was applied (the world would not stop, or the game went online
-		// in the meantime): the snapshot is still the way back, so keep it.
-		if (!result.success && s_undoBody.empty())
-			s_undoBody.swap(body);
-		return result;
+		try
+		{
+			body.resize((size_t)s_undoSize);
+		}
+		catch (const std::bad_alloc&)
+		{
+			return OperationResult::Fail("Not enough free memory to undo the load");
+		}
+		const size_t inflated = ZSTD_decompress(body.data(), body.size(), s_undoCompressed.data(), s_undoCompressed.size());
+		if (ZSTD_isError(inflated) || inflated != body.size())
+		{
+			DiscardUndoState();
+			return OperationResult::Fail("The undo snapshot is damaged");
+		}
+		return ApplyStateBody(body);
 	}
 } // namespace SaveStates
