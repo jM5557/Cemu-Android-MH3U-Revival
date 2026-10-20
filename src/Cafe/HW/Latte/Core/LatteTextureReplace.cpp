@@ -16,6 +16,8 @@
 #include <string>
 #include <algorithm>
 #include <chrono>
+#include <functional>
+#include <cctype>
 
 namespace fs = std::filesystem;
 
@@ -77,6 +79,8 @@ namespace LatteTextureReplace
 	// Current-scheme hash -> the plain content hash an older pack names the same texture by. Filled
 	// in as textures are hashed (see HashGuestAlways), consulted by every lookup through findGroup.
 	static std::unordered_map<uint64_t,uint64_t> s_legacyAlias;
+	// [filtering] from the enabled packs' textures.ini, by hash (see FilterOverride)
+	static std::unordered_map<uint64_t,uint8_t> s_filters;
 	static bool s_enabled=false, s_skipMip=false, s_initDone=false, s_wantEnabled=false;
 	static uint64_t s_title=0;
 	static size_t s_conflictCount=0;
@@ -114,7 +118,7 @@ namespace LatteTextureReplace
 			return def; };
 		s_skipMip=b("skip_mipmap",s_skipMip);
 	}
-	static void freeAll(){ for(auto&[h,g]:s_index){ for(auto&[m,e]:g.decoded) if(e.data) free(e.data); for(auto&[m,e]:g.rgba8) if(e.data) free(e.data); } s_index.clear(); s_legacyAlias.clear(); }
+	static void freeAll(){ for(auto&[h,g]:s_index){ for(auto&[m,e]:g.decoded) if(e.data) free(e.data); for(auto&[m,e]:g.rgba8) if(e.data) free(e.data); } s_index.clear(); s_legacyAlias.clear(); s_filters.clear(); }
 
 	// Every pack folder that exists for a title, sorted. Caller must not hold s_mutex expectations:
 	// this only touches the filesystem.
@@ -131,30 +135,142 @@ namespace LatteTextureReplace
 		return out;
 	}
 
+	// ---- textures.ini ----
+	//
+	// A pack can list its textures in a textures.ini at the pack's top level instead of (or as well as)
+	// naming each file after its hash, so the files can be named and arranged however the author
+	// likes. The format follows PPSSPP's:
+	//
+	//   [hashes]
+	//   # comments start with '#', anywhere on a line
+	//   22fb5c1e481b3338 = menu/background1.dds
+	//
+	//   [filtering]
+	//   22fb5c1e481b3338 = nearest      # or linear, or auto (the game's own filtering)
+	//
+	// A key is the 16-digit hash at the start of a dumped texture's filename. The whole dump name
+	// (22fb5c1e481b3338_1280x720_fmt0031_mip00) works too, and is the only way to give a mip level
+	// other than 0; a plain hash means mip 0, whose DDS can carry the whole mip chain. Paths are
+	// relative to the pack folder, with '/' or '\'. Unknown sections are ignored.
+	//
+	// Within a pack, textures.ini is read first, so where it and a hash-named file both provide a
+	// texture, the ini wins. Between packs the usual rule applies: the alphabetically first wins.
+
+	// One texture a pack provides: a hash-named file, or a textures.ini [hashes] line
+	struct PackEntry { uint64_t hash=0; int mip=0; fs::path path; int nameW=0, nameH=0; uint32_t nameFmt=0; };
+
+	static std::string trimmed(const std::string& s){
+		size_t b=0, e=s.size();
+		while(b<e && std::isspace((unsigned char)s[b])) b++;
+		while(e>b && std::isspace((unsigned char)s[e-1])) e--;
+		return s.substr(b,e-b);
+	}
+	static std::string lowered(std::string s){ for(auto& c:s) c=(char)std::tolower((unsigned char)c); return s; }
+
+	// A plain hash (mip 0), or a whole dump name, which also carries the mip level and the size and
+	// format the older-hash fallback checks against.
+	static bool parseKey(const std::string& key,uint64_t& hash,int& mip,int& w,int& h,uint32_t& fmt){
+		if(parseName(key,hash,w,h,fmt,mip)) return true;
+		std::string k=key;
+		if(k.size()>2 && k[0]=='0' && (k[1]=='x'||k[1]=='X')) k=k.substr(2);
+		if(k.empty()||k.size()>16) return false;
+		for(char c:k) if(!std::isxdigit((unsigned char)c)) return false;
+		hash=std::stoull(k,nullptr,16); mip=0; w=0; h=0; fmt=0;
+		return hash!=0;
+	}
+
+	static void readTexturesIni(const fs::path& dir,const std::function<void(const PackEntry&)>& onEntry,
+								std::unordered_map<uint64_t,uint8_t>* filters){
+		std::error_code ec;
+		const fs::path iniPath=dir/"textures.ini";
+		if(!fs::is_regular_file(iniPath,ec)) return;
+		std::ifstream f(iniPath,std::ios::binary);
+		if(!f) return;
+		const std::string where=_pathToUtf8(iniPath);
+		uint32_t warnings=0;
+		auto warn=[&](int lineNo,const std::string& what){
+			if(++warnings<=16) cemuLog_log(LogType::Force,"[TextureReplace] {} line {}: {}",where,lineNo,what);
+		};
+		std::string line, section;
+		int lineNo=0;
+		std::set<std::pair<uint64_t,int>> listed; // a texture listed twice keeps its first file
+		while(std::getline(f,line)){
+			lineNo++;
+			if(lineNo==1 && line.size()>=3 && (uint8_t)line[0]==0xEF && (uint8_t)line[1]==0xBB && (uint8_t)line[2]==0xBF)
+				line.erase(0,3); // UTF-8 byte order mark
+			if(auto c=line.find('#'); c!=std::string::npos) line.erase(c);
+			line=trimmed(line);
+			if(line.empty() || line[0]==';') continue;
+			if(line[0]=='['){
+				const size_t close=line.find(']');
+				section=lowered(trimmed(line.substr(1,close==std::string::npos?std::string::npos:close-1)));
+				continue;
+			}
+			const size_t eq=line.find('=');
+			if(eq==std::string::npos){ if(section=="hashes"||section=="filtering") warn(lineNo,"expected <hash> = <value>"); continue; }
+			const std::string key=trimmed(line.substr(0,eq));
+			std::string value=trimmed(line.substr(eq+1));
+			if(value.size()>=2 && value.front()=='"' && value.back()=='"') value=value.substr(1,value.size()-2);
+			if(section!="hashes" && section!="filtering") continue;
+			uint64_t hash; int mip,w,h; uint32_t fmt;
+			if(!parseKey(key,hash,mip,w,h,fmt)){ warn(lineNo,"'"+key+"' is not a texture hash"); continue; }
+			if(section=="hashes"){
+				if(value.empty()) continue; // listed but not replaced
+				std::replace(value.begin(),value.end(),'\\','/');
+				const fs::path p=dir/_utf8ToPath(value);
+				if(!isDDSFile(p)){ warn(lineNo,"'"+value+"' is not a .dds file"); continue; }
+				if(!fs::is_regular_file(p,ec)){ warn(lineNo,"'"+value+"' does not exist"); continue; }
+				if(!listed.emplace(hash,mip).second){ warn(lineNo,"'"+key+"' is listed more than once, keeping the first"); continue; }
+				onEntry(PackEntry{hash,mip,p,w,h,fmt});
+			}
+			else if(filters){
+				const std::string v=lowered(value);
+				uint8_t filter;
+				if(v=="nearest"||v=="point") filter=(uint8_t)FilterOverride::Nearest;
+				else if(v=="linear"||v=="bilinear") filter=(uint8_t)FilterOverride::Linear;
+				else if(v=="auto"||v=="default") filter=(uint8_t)FilterOverride::None;
+				else { warn(lineNo,"unknown filter '"+value+"' (use nearest, linear or auto)"); continue; }
+				filters->try_emplace(hash,filter); // an earlier pack's setting stands
+			}
+		}
+	}
+
+	// Every texture a folder provides: its textures.ini first, then files named by their hash.
+	static void forEachPackEntry(const fs::path& dir,bool recurse,const std::function<void(const PackEntry&)>& onEntry,
+								 std::unordered_map<uint64_t,uint8_t>* filters){
+		readTexturesIni(dir,onEntry,filters);
+		std::error_code ec;
+		auto handleFile=[&](const fs::path& p){
+			if(!isDDSFile(p)) return;
+			PackEntry e; e.path=p;
+			if(!parseName(p.filename().string(),e.hash,e.nameW,e.nameH,e.nameFmt,e.mip)) return;
+			onEntry(e);
+		};
+		if(recurse){ for(auto& e: fs::recursive_directory_iterator(dir,ec)) if(e.is_regular_file()) handleFile(e.path()); }
+		else       { for(auto& e: fs::directory_iterator(dir,ec))           if(e.is_regular_file()) handleFile(e.path()); }
+	}
+
 	// Index one folder. A (hash,mip) already claimed by an earlier pack is left alone: the
 	// alphabetically first enabled pack wins, and the user is warned about the overlap in the UI.
 	static size_t indexFolder(const fs::path& dir, bool recurse, const std::string& packName, bool reportConflicts){
-		size_t added=0; std::error_code ec;
-		auto handleFile=[&](const fs::path& p){
-			if(!isDDSFile(p)) return;
-			uint64_t hash; int w,h,mip; uint32_t fmt;
-			if(!parseName(p.filename().string(),hash,w,h,fmt,mip)) return;
-			if(s_skipMip && mip!=0) return;
-			HashGroup& grp=s_index[hash];
-			auto ex=grp.mips.find(mip);
+		size_t added=0;
+		forEachPackEntry(dir,recurse,[&](const PackEntry& e){
+			if(s_skipMip && e.mip!=0) return;
+			HashGroup& grp=s_index[e.hash];
+			auto ex=grp.mips.find(e.mip);
 			if(ex!=grp.mips.end()){
 				if(reportConflicts && ex->second.pack!=packName){
 					s_conflictCount++;
 					if(s_conflictCount<=8)
-						cemuLog_log(LogType::Force,"[TextureReplace] '{}' also replaced by pack '{}' - keeping the one from '{}'",p.filename().string(),packName,ex->second.pack);
+						cemuLog_log(LogType::Force,"[TextureReplace] '{}' also replaced by pack '{}' - keeping the one from '{}'",e.path.filename().string(),packName,ex->second.pack);
 				}
 				return; // first claim wins
 			}
-			grp.mips[mip]=FileRef{p,w,h,0,false,packName,w,h,fmt};
+			// width/height start from the filename and are replaced by the DDS header on first use;
+			// a textures.ini entry has no name to go by, so they start at 0
+			grp.mips[e.mip]=FileRef{e.path,e.nameW,e.nameH,0,false,packName,e.nameW,e.nameH,e.nameFmt};
 			added++;
-		};
-		if(recurse){ for(auto& e: fs::recursive_directory_iterator(dir,ec)) if(e.is_regular_file()) handleFile(e.path()); }
-		else       { for(auto& e: fs::directory_iterator(dir,ec))           if(e.is_regular_file()) handleFile(e.path()); }
+		},&s_filters);
 		return added;
 	}
 
@@ -190,9 +306,9 @@ namespace LatteTextureReplace
 		// Then any loose files sitting directly in the title folder. These belong to no pack and
 		// act as a base layer that an enabled pack can override.
 		count += indexFolder(base,false,std::string(),false);
-		s_enabled = count>0;
+		s_enabled = count>0 || !s_filters.empty();
 		auto tMs=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-tStart).count();
-		cemuLog_log(LogType::Force,"[TextureReplace] {} files from {} pack(s), skipMip={}, title {:016x}, index built in {} ms",count,packs.size(),s_skipMip,tid,tMs);
+		cemuLog_log(LogType::Force,"[TextureReplace] {} files from {} pack(s), {} filter setting(s), skipMip={}, title {:016x}, index built in {} ms",count,packs.size(),s_filters.size(),s_skipMip,tid,tMs);
 		if(s_conflictCount>0)
 			cemuLog_log(LogType::Force,"[TextureReplace] {} texture(s) claimed by more than one enabled pack",s_conflictCount);
 	}
@@ -304,9 +420,20 @@ namespace LatteTextureReplace
 		auto m0=grp->mips.find(0); if(m0==grp->mips.end()) return false;
 		FileRef& ref=m0->second;
 		probeFile(ref);
+		// no usable size: a textures.ini entry whose DDS header cannot be read (a hash-named file
+		// at least falls back to the size in its name)
+		if(ref.width<=0 || ref.height<=0) return false;
 		out.width=ref.width; out.height=ref.height;
 		out.hasFormat=(ref.gx2Format!=0); out.gx2Format=ref.gx2Format;
 		return true;
+	}
+
+	FilterOverride GetFilter(uint64_t contentHash){
+		if(contentHash==0) return FilterOverride::None;
+		std::scoped_lock lock(s_mutex); EnsureInit();
+		if(!s_enabled) return FilterOverride::None;
+		auto it=s_filters.find(contentHash);
+		return it==s_filters.end() ? FilterOverride::None : (FilterOverride)it->second;
 	}
 
 	const LatteTextureReplace_Entry* GetSlice(uint64_t contentHash, int mipIndex){
@@ -377,7 +504,7 @@ namespace LatteTextureReplace
 	std::vector<std::string> ListPacks(uint64_t titleId){ return scanPackFolders(titleId); }
 
 	// Which textures are provided by more than one of the given packs. Returns one line per
-	// clashing texture: "<hash> mip<N>: PackA, PackB". Reads filenames only - no files are opened.
+	// clashing texture: "<hash> mip<N>: PackA, PackB". Reads filenames and textures.ini only.
 	std::vector<std::string> FindPackConflicts(uint64_t titleId, const std::vector<std::string>& packs){
 		std::vector<std::string> out;
 		std::error_code ec;
@@ -390,14 +517,10 @@ namespace LatteTextureReplace
 		for(const auto& p : sorted){
 			fs::path packDir=base/_utf8ToPath(p);
 			if(!fs::is_directory(packDir,ec)) continue;
-			for(auto& e: fs::recursive_directory_iterator(packDir,ec)){
-				if(!e.is_regular_file()) continue;
-				if(!isDDSFile(e.path())) continue;
-				uint64_t hash; int w,h,mip; uint32_t fmt;
-				if(!parseName(e.path().filename().string(),hash,w,h,fmt,mip)) continue;
-				auto& v=owners[{hash,mip}];
+			forEachPackEntry(packDir,true,[&](const PackEntry& e){
+				auto& v=owners[{e.hash,e.mip}];
 				if(std::find(v.begin(),v.end(),p)==v.end()) v.push_back(p);
-			}
+			},nullptr);
 		}
 		for(const auto& kv : owners){
 			if(kv.second.size()<2) continue;

@@ -6,6 +6,7 @@
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteSoftware.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
+#include "Cafe/HW/Latte/Core/LatteTextureReplace.h"
 
 #include "Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.h"
 #include "Cafe/HW/Latte/Renderer/OpenGL/LatteTextureGL.h"
@@ -1423,6 +1424,10 @@ void OpenGLRenderer::renderstate_updateTextureSettingsGL(LatteDecompilerShader* 
 		auto filterMin = samplerWords->WORD0.get_XY_MAG_FILTER();
 		//auto filterZ = samplerWords->WORD0.get_Z_FILTER();
 		auto filterMip = samplerWords->WORD0.get_MIP_FILTER();
+		// a texture pack's textures.ini [filtering] overrides the game's choice
+		const bool packForcesNearest = baseTexture->replFilter == (uint8)LatteTextureReplace::FilterOverride::Nearest;
+		if (baseTexture->replFilter != 0)
+			filterMin = filterMag = packForcesNearest ? Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT : Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::BILINEAR;
 
 		// get OpenGL constant for min filter
 		uint32 filterMinGL = _getGLMinFilter(filterMin, filterMip);
@@ -1461,6 +1466,8 @@ void OpenGLRenderer::renderstate_updateTextureSettingsGL(LatteDecompilerShader* 
 
 		if (baseTexture->overwriteInfo.anisotropicLevel >= 0)
 			maxAniso = baseTexture->overwriteInfo.anisotropicLevel;
+		if (packForcesNearest)
+			maxAniso = 0; // anisotropic filtering would blend texels again
 
 		if (samplerState->maxAniso != maxAniso)
 		{

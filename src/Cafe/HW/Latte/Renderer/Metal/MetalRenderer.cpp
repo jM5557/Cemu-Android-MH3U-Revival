@@ -16,6 +16,7 @@
 
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteIndices.h"
+#include "Cafe/HW/Latte/Core/LatteTextureReplace.h"
 #include "Cafe/HW/Latte/Core/LatteBufferCache.h"
 #include "CafeSystem.h"
 #include "Cemu/Logging/CemuLogging.h"
@@ -2073,6 +2074,22 @@ void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandE
             // Max anisotropy
             if (baseTexture->overwriteInfo.anisotropicLevel >= 0)
                 samplerWords->WORD0.set_MAX_ANISO_RATIO(baseTexture->overwriteInfo.anisotropicLevel);
+
+            // A texture pack's textures.ini [filtering]. Applied to a copy rather than to the
+            // registers, since the setting belongs to this texture, not to the sampler slot. The
+            // sampler cache is keyed on the words it is given, so the copy gets its own sampler.
+            _LatteRegisterSetSampler packSamplerWords;
+            if (baseTexture->replFilter != 0)
+            {
+                packSamplerWords = *samplerWords;
+                const bool nearest = baseTexture->replFilter == (uint8)LatteTextureReplace::FilterOverride::Nearest;
+                const auto filter = nearest ? Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT : Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::BILINEAR;
+                packSamplerWords.WORD0.set_XY_MIN_FILTER(filter);
+                packSamplerWords.WORD0.set_XY_MAG_FILTER(filter);
+                if (nearest)
+                    packSamplerWords.WORD0.set_MAX_ANISO_RATIO(0); // anisotropic filtering would blend texels again
+                samplerWords = &packSamplerWords;
+            }
 
     		sampler = m_samplerCache->GetSamplerState(LatteGPUState.contextNew, shader->shaderType, stageSamplerIndex, samplerWords);
 		}

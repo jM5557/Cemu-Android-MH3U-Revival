@@ -684,6 +684,8 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 		// HashGuestAlways rather than HashGuest: dump names must be right even with no pack loaded.
 		// The value is identical, so a replacement lookup is unaffected.
 		tex->replStrongHash = LatteTextureReplace::HashGuestAlways(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format);
+		// Read on every reload, since a reused texture object can now hold a different texture
+		tex->replFilter = (uint8)LatteTextureReplace::GetFilter(tex->replStrongHash);
 	}
 
 	// Dump slice 0 of each mip of a replaceable surface, once. The name is the one the replacement

@@ -13,6 +13,9 @@
 //             texDataHash2, which samples only ~296 bytes and collides between
 //             different textures -- e.g. monster subspecies sharing a base texture)
 //   Filename: <hash16>_<w>x<h>_fmt<XXXX>_mip<NN>.dds
+//             or any name, listed in the pack's textures.ini (PPSSPP style):
+//               [hashes]     <hash16> = sub/folder/file.dds
+//               [filtering]  <hash16> = nearest | linear | auto
 // DDS only (BC1/BC2/BC3/BC4/BC5), uploaded compressed with no intermediate decode. A single
 // mip00 file carrying a full internal mip chain serves every mip level.
 
@@ -44,6 +47,11 @@ namespace LatteTextureReplace
 	// size/format of the replacement, used to size the host texture (no [TextureRedefine] needed)
 	struct ReplacementInfo { int width=0, height=0; bool hasFormat=false; uint32_t gx2Format=0; };
 	bool GetInfo(uint64_t contentHash, ReplacementInfo& out);
+
+	// Sampling filter a pack sets for a texture ([filtering] in textures.ini). Applies to the
+	// texture whether or not it is also replaced. None leaves the game's own filtering.
+	enum class FilterOverride : uint8_t { None = 0, Nearest = 1, Linear = 2 };
+	FilterOverride GetFilter(uint64_t contentHash);
 	// full-data hash over the guest mip0 surface; stable and unique per distinct texture
 	uint64_t HashGuest(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt);
 	// Same value as HashGuest, but computed even when no pack is loaded. Texture dumps are named

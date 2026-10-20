@@ -158,6 +158,9 @@ public:
 	// file. A graphic pack resolution rule also sets an overwrite -- that is how render targets
 	// get one -- so the flag records WHO set it rather than guessing from the format.
 	bool replOverwriteIsOurs{ false };
+	// [texture replacement] sampling filter forced by a pack's textures.ini [filtering]
+	// (LatteTextureReplace::FilterOverride: 0 = the game's own, 1 = nearest, 2 = linear)
+	uint8 replFilter{ 0 };
 	uint16 replRecheckCount{ 0 }; // [texture replacement] how many times we've re-checked for a replacement
 	bool enableReadback{ false }; // if true, texture will be mirrored back to CPU RAM under specific circumstances
 	// invalidation

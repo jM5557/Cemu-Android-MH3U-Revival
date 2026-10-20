@@ -8,6 +8,7 @@
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/Core/LatteIndices.h"
+#include "Cafe/HW/Latte/Core/LatteTextureReplace.h"
 #include "Cafe/OS/libs/gx2/GX2.h"
 #include "imgui/imgui_impl_vulkan.h"
 #include "Cafe/GameProfile/GameProfile.h"
@@ -523,6 +524,9 @@ uint64 VulkanRenderer::GetDescriptorSetStateHash(LatteDecompilerShader* shader)
 			hash = std::rotl<uint64>(hash, 7);
 		}
 		hash = std::rotl<uint64>(hash, 7);
+		// a pack's filter override is part of the sampler, but not of the registers hashed above
+		hash += texture->baseTexture->replFilter;
+		hash = std::rotl<uint64>(hash, 3);
 		// hash view id + swizzle mask
 		hash += (uint64)texture->GetUniqueId();
 		hash = std::rotr<uint64>(hash, 21);
@@ -734,10 +738,14 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 			}
 
 			auto filterMin = samplerWords->WORD0.get_XY_MIN_FILTER();
+			auto filterMag = samplerWords->WORD0.get_XY_MAG_FILTER();
+			// a texture pack's textures.ini [filtering] overrides the game's choice
+			if (baseTexture->replFilter != 0)
+				filterMin = filterMag = baseTexture->replFilter == (uint8)LatteTextureReplace::FilterOverride::Nearest
+					? Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT : Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::BILINEAR;
 			cemu_assert_debug(filterMin != Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::BICUBIC); // todo
 			samplerInfo.minFilter = (filterMin == Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT || filterMin == Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::ANISO_POINT) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
 
-			auto filterMag = samplerWords->WORD0.get_XY_MAG_FILTER();
 			samplerInfo.magFilter = (filterMag == Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT || filterMin == Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::ANISO_POINT) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
 
 			auto filterZ = samplerWords->WORD0.get_Z_FILTER();
@@ -766,6 +774,9 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 
 			if (baseTexture->overwriteInfo.anisotropicLevel >= 0)
 				maxAniso = baseTexture->overwriteInfo.anisotropicLevel;
+			// anisotropic filtering would blend texels again
+			if (baseTexture->replFilter == (uint8)LatteTextureReplace::FilterOverride::Nearest)
+				maxAniso = 0;
 
 			if (maxAniso > 0)
 			{
