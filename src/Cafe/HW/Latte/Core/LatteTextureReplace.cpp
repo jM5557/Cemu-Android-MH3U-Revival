@@ -77,7 +77,6 @@ namespace LatteTextureReplace
 	// Current-scheme hash -> the plain content hash an older pack names the same texture by. Filled
 	// in as textures are hashed (see HashGuestAlways), consulted by every lookup through findGroup.
 	static std::unordered_map<uint64_t,uint64_t> s_legacyAlias;
-	static std::unordered_map<uint64_t,LatteTextureReplace_Filter> s_filters; // from textures.ini [filtering]
 	static bool s_enabled=false, s_skipMip=false, s_initDone=false, s_wantEnabled=false;
 	static uint64_t s_title=0;
 	static size_t s_conflictCount=0;
@@ -115,96 +114,7 @@ namespace LatteTextureReplace
 			return def; };
 		s_skipMip=b("skip_mipmap",s_skipMip);
 	}
-	static void freeAll(){ for(auto&[h,g]:s_index){ for(auto&[m,e]:g.decoded) if(e.data) free(e.data); for(auto&[m,e]:g.rgba8) if(e.data) free(e.data); } s_index.clear(); s_legacyAlias.clear(); s_filters.clear(); }
-
-	// ---- textures.ini ----
-	// A pack may carry a textures.ini in its top folder, in PPSSPP's format:
-	//   [hashes]
-	//   22fb5c1e481b3338 = menu/background1.dds   any name, any folder inside the pack; several keys may share a file
-	//   [filtering]
-	//   22fb5c1e481b3338 = linear                 nearest, linear, or auto (the game's own)
-	// A key is the 16-digit hash, or a full dump name (<hash>_<w>x<h>_fmt<XXXX>_mip<NN>, .dds optional).
-	// The full name is needed to map a mip level other than 0, and for a hash from before the current
-	// scheme, which is only accepted for a texture of the size and format the name gives (see
-	// matchesLegacyName). Lines starting with # or ; are comments, and so is anything after a # or ;
-	// that follows a space. Other sections, such as PPSSPP's [options], are skipped.
-	struct IniEntry { uint64_t hash=0; int mip=0, nameW=0, nameH=0; uint32_t nameFmt=0; fs::path file; };
-	struct IniFilter { uint64_t hash=0; LatteTextureReplace_Filter filter=LatteTextureReplace_Filter::Game; };
-
-	static std::string trimmed(const std::string& s){
-		size_t b=s.find_first_not_of(" \t\r\n"), e=s.find_last_not_of(" \t\r\n");
-		return b==std::string::npos ? std::string() : s.substr(b,e-b+1);
-	}
-	static std::string lowered(std::string s){ for(auto& c:s) c=(char)tolower((unsigned char)c); return s; }
-
-	static bool parseIniKey(std::string k, IniEntry& out){
-		if(k.size()>4 && lowered(k.substr(k.size()-4))==".dds") k.resize(k.size()-4);
-		uint64_t hash; int w,h,mip; uint32_t fmt;
-		if(parseName(k,hash,w,h,fmt,mip)){ out.hash=hash; out.mip=mip; out.nameW=w; out.nameH=h; out.nameFmt=fmt; return hash!=0; }
-		if(k.empty() || k.size()>16) return false;
-		for(char c:k) if(!isxdigit((unsigned char)c)) return false;
-		out.hash=strtoull(k.c_str(),nullptr,16); out.mip=0;
-		return out.hash!=0; // 0 is the "no hash" sentinel
-	}
-
-	// Reads <packDir>/textures.ini into entries/filters. Every [hashes] file is checked to exist and to
-	// stay inside the pack. Returns false when the pack has no ini. Problems are logged when log is set.
-	static bool readPackIni(const fs::path& packDir, const std::string& packName, std::vector<IniEntry>& entries, std::vector<IniFilter>& filters, bool log){
-		std::ifstream f(packDir/"textures.ini");
-		if(!f) return false;
-		size_t problems=0;
-		auto warn=[&](int lineNo, const std::string& msg){
-			if(log && ++problems<=8) cemuLog_log(LogType::Force,"[TextureReplace] pack '{}' textures.ini line {}: {}",packName,lineNo,msg);
-		};
-		std::string section, line;
-		std::set<std::string> skippedSections;
-		int lineNo=0;
-		while(std::getline(f,line)){
-			lineNo++;
-			if(lineNo==1 && line.size()>=3 && (uint8_t)line[0]==0xEF && (uint8_t)line[1]==0xBB && (uint8_t)line[2]==0xBF) line.erase(0,3);
-			for(size_t i=0;i<line.size();i++)
-				if((line[i]=='#'||line[i]==';') && (i==0||line[i-1]==' '||line[i-1]=='\t')){ line.resize(i); break; }
-			line=trimmed(line);
-			if(line.empty()) continue;
-			if(line.front()=='['){
-				const size_t close=line.find(']');
-				section=lowered(trimmed(line.substr(1,close==std::string::npos ? std::string::npos : close-1)));
-				if(section!="hashes" && section!="filtering" && skippedSections.insert(section).second)
-					warn(lineNo,"section ["+section+"] is not supported, skipped");
-				continue;
-			}
-			if(section!="hashes" && section!="filtering") continue;
-			size_t eq=line.find('=');
-			if(eq==std::string::npos){ warn(lineNo,"expected <hash> = <value>"); continue; }
-			IniEntry e;
-			if(!parseIniKey(trimmed(line.substr(0,eq)),e)){ warn(lineNo,"'"+trimmed(line.substr(0,eq))+"' is not a texture hash"); continue; }
-			std::string value=trimmed(line.substr(eq+1));
-			if(value.size()>=2 && value.front()=='"' && value.back()=='"') value=value.substr(1,value.size()-2);
-			if(section=="filtering"){
-				const std::string v=lowered(value);
-				IniFilter fl; fl.hash=e.hash;
-				if(v=="nearest") fl.filter=LatteTextureReplace_Filter::Nearest;
-				else if(v=="linear") fl.filter=LatteTextureReplace_Filter::Linear;
-				else if(v=="auto") fl.filter=LatteTextureReplace_Filter::Game;
-				else { warn(lineNo,"filter '"+value+"' is not nearest, linear or auto"); continue; }
-				filters.push_back(fl);
-				continue;
-			}
-			if(value.empty()){ warn(lineNo,"no file given"); continue; }
-			std::replace(value.begin(),value.end(),'\\','/');
-			fs::path rel=_utf8ToPath(value);
-			bool inside=!rel.is_absolute() && !rel.has_root_name() && !rel.has_root_directory();
-			for(const auto& part: rel) if(part==fs::path("..")) inside=false;
-			if(!inside){ warn(lineNo,"'"+value+"' is not a path inside the pack"); continue; }
-			if(!isDDSFile(rel)){ warn(lineNo,"'"+value+"' is not a .dds file"); continue; }
-			std::error_code ec;
-			e.file=packDir/rel;
-			if(!fs::is_regular_file(e.file,ec)){ warn(lineNo,"file not found: "+value); continue; }
-			entries.push_back(std::move(e));
-		}
-		if(log && problems>8) cemuLog_log(LogType::Force,"[TextureReplace] pack '{}' textures.ini: {} more problem(s) not shown",packName,problems-8);
-		return true;
-	}
+	static void freeAll(){ for(auto&[h,g]:s_index){ for(auto&[m,e]:g.decoded) if(e.data) free(e.data); for(auto&[m,e]:g.rgba8) if(e.data) free(e.data); } s_index.clear(); s_legacyAlias.clear(); }
 
 	// Every pack folder that exists for a title, sorted. Caller must not hold s_mutex expectations:
 	// this only touches the filesystem.
@@ -221,44 +131,27 @@ namespace LatteTextureReplace
 		return out;
 	}
 
-	// Give (hash,mip) to a file. One already claimed by an earlier pack is left alone: the
+	// Index one folder. A (hash,mip) already claimed by an earlier pack is left alone: the
 	// alphabetically first enabled pack wins, and the user is warned about the overlap in the UI.
-	static bool claimTexture(uint64_t hash, int mip, FileRef ref, bool reportConflicts){
-		if(s_skipMip && mip!=0) return false;
-		HashGroup& grp=s_index[hash];
-		auto ex=grp.mips.find(mip);
-		if(ex!=grp.mips.end()){
-			if(reportConflicts && ex->second.pack!=ref.pack){
-				s_conflictCount++;
-				if(s_conflictCount<=8)
-					cemuLog_log(LogType::Force,"[TextureReplace] '{}' also replaced by pack '{}' - keeping the one from '{}'",ref.path.filename().string(),ref.pack,ex->second.pack);
-			}
-			return false; // first claim wins
-		}
-		grp.mips[mip]=std::move(ref);
-		return true;
-	}
-
-	// Index one folder. A pack's textures.ini is read first, so what it maps wins over a file named
-	// by hash in the same pack.
 	static size_t indexFolder(const fs::path& dir, bool recurse, const std::string& packName, bool reportConflicts){
 		size_t added=0; std::error_code ec;
-		if(recurse){
-			std::vector<IniEntry> entries; std::vector<IniFilter> filters;
-			if(readPackIni(dir,packName,entries,filters,true)){
-				size_t mapped=0;
-				for(auto& e: entries)
-					if(claimTexture(e.hash,e.mip,FileRef{e.file,0,0,0,false,packName,e.nameW,e.nameH,e.nameFmt},reportConflicts)) mapped++;
-				for(const auto& fl: filters) s_filters.emplace(fl.hash,fl.filter); // first pack wins here too
-				added+=mapped;
-				cemuLog_log(LogType::Force,"[TextureReplace] pack '{}': textures.ini maps {} texture(s) and sets {} filter(s)",packName,mapped,filters.size());
-			}
-		}
 		auto handleFile=[&](const fs::path& p){
 			if(!isDDSFile(p)) return;
 			uint64_t hash; int w,h,mip; uint32_t fmt;
 			if(!parseName(p.filename().string(),hash,w,h,fmt,mip)) return;
-			if(claimTexture(hash,mip,FileRef{p,w,h,0,false,packName,w,h,fmt},reportConflicts)) added++;
+			if(s_skipMip && mip!=0) return;
+			HashGroup& grp=s_index[hash];
+			auto ex=grp.mips.find(mip);
+			if(ex!=grp.mips.end()){
+				if(reportConflicts && ex->second.pack!=packName){
+					s_conflictCount++;
+					if(s_conflictCount<=8)
+						cemuLog_log(LogType::Force,"[TextureReplace] '{}' also replaced by pack '{}' - keeping the one from '{}'",p.filename().string(),packName,ex->second.pack);
+				}
+				return; // first claim wins
+			}
+			grp.mips[mip]=FileRef{p,w,h,0,false,packName,w,h,fmt};
+			added++;
 		};
 		if(recurse){ for(auto& e: fs::recursive_directory_iterator(dir,ec)) if(e.is_regular_file()) handleFile(e.path()); }
 		else       { for(auto& e: fs::directory_iterator(dir,ec))           if(e.is_regular_file()) handleFile(e.path()); }
@@ -297,9 +190,7 @@ namespace LatteTextureReplace
 		// Then any loose files sitting directly in the title folder. These belong to no pack and
 		// act as a base layer that an enabled pack can override.
 		count += indexFolder(base,false,std::string(),false);
-		if(fs::exists(base/"textures.ini",ec))
-			cemuLog_log(LogType::Force,"[TextureReplace] the textures.ini in {} is not read: it belongs in a pack folder inside it",_pathToUtf8(base));
-		s_enabled = count>0 || !s_filters.empty();
+		s_enabled = count>0;
 		auto tMs=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-tStart).count();
 		cemuLog_log(LogType::Force,"[TextureReplace] {} files from {} pack(s), skipMip={}, title {:016x}, index built in {} ms",count,packs.size(),s_skipMip,tid,tMs);
 		if(s_conflictCount>0)
@@ -372,19 +263,7 @@ namespace LatteTextureReplace
 		return nullptr;
 	}
 
-	// textures.ini [filtering] for a texture, by its current hash or the older one an older pack's
-	// full dump name gives. Caller holds s_mutex.
-	static LatteTextureReplace_Filter lookupFilter(uint64_t hash){
-		if(s_filters.empty() || hash==0) return LatteTextureReplace_Filter::Game;
-		if(auto it=s_filters.find(hash); it!=s_filters.end()) return it->second;
-		if(auto a=s_legacyAlias.find(hash); a!=s_legacyAlias.end())
-			if(auto it=s_filters.find(a->second); it!=s_filters.end()) return it->second;
-		return LatteTextureReplace_Filter::Game;
-	}
-
-	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt,
-							 LatteTextureReplace_Filter* filterOut){
-		if(filterOut) *filterOut=LatteTextureReplace_Filter::Game;
+	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt){
 		const uint8* p=(const uint8*)memory_getPointerFromPhysicalOffset(physImagePtr);
 		if(!p||!sizeBytes) return 0;
 		const uint64_t raw = HashData(p, sizeBytes);
@@ -396,8 +275,6 @@ namespace LatteTextureReplace
 				auto it=s_index.find(raw);
 				if(it!=s_index.end() && matchesLegacyName(it->second, pixelCount, fmt)) s_legacyAlias[current]=raw;
 			}
-			// under the same lock, rather than taking it a second time per texture load for GetFilter
-			if(filterOut && s_enabled) *filterOut=lookupFilter(current);
 		}
 		return current;
 	}
@@ -427,19 +304,9 @@ namespace LatteTextureReplace
 		auto m0=grp->mips.find(0); if(m0==grp->mips.end()) return false;
 		FileRef& ref=m0->second;
 		probeFile(ref);
-		// no usable size: a textures.ini entry whose DDS header cannot be read (a file named by
-		// hash at least falls back to the size in its name). Sizing the texture 0x0 would break it.
-		if(ref.width<=0 || ref.height<=0) return false;
 		out.width=ref.width; out.height=ref.height;
 		out.hasFormat=(ref.gx2Format!=0); out.gx2Format=ref.gx2Format;
 		return true;
-	}
-
-	LatteTextureReplace_Filter GetFilter(uint64_t contentHash){
-		if(contentHash==0) return LatteTextureReplace_Filter::Game; // nothing to look up, so no lock
-		std::scoped_lock lock(s_mutex); EnsureInit();
-		if(!s_enabled) return LatteTextureReplace_Filter::Game;
-		return lookupFilter(contentHash);
 	}
 
 	const LatteTextureReplace_Entry* GetSlice(uint64_t contentHash, int mipIndex){
@@ -510,8 +377,7 @@ namespace LatteTextureReplace
 	std::vector<std::string> ListPacks(uint64_t titleId){ return scanPackFolders(titleId); }
 
 	// Which textures are provided by more than one of the given packs. Returns one line per
-	// clashing texture: "<hash> mip<N>: PackA, PackB". Reads filenames and textures.ini only - no
-	// texture files are opened.
+	// clashing texture: "<hash> mip<N>: PackA, PackB". Reads filenames only - no files are opened.
 	std::vector<std::string> FindPackConflicts(uint64_t titleId, const std::vector<std::string>& packs){
 		std::vector<std::string> out;
 		std::error_code ec;
@@ -524,12 +390,6 @@ namespace LatteTextureReplace
 		for(const auto& p : sorted){
 			fs::path packDir=base/_utf8ToPath(p);
 			if(!fs::is_directory(packDir,ec)) continue;
-			std::vector<IniEntry> entries; std::vector<IniFilter> filters;
-			readPackIni(packDir,p,entries,filters,false);
-			for(const auto& e: entries){
-				auto& v=owners[{e.hash,e.mip}];
-				if(std::find(v.begin(),v.end(),p)==v.end()) v.push_back(p);
-			}
 			for(auto& e: fs::recursive_directory_iterator(packDir,ec)){
 				if(!e.is_regular_file()) continue;
 				if(!isDDSFile(e.path())) continue;

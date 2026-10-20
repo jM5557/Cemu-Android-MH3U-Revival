@@ -20,7 +20,6 @@ struct LatteSamplerState
 };
 
 #include "Cafe/HW/Latte/Core/LatteTextureView.h"
-#include "Cafe/HW/Latte/Core/LatteTextureReplace.h"
 
 class LatteTexture
 {
@@ -160,8 +159,6 @@ public:
 	// get one -- so the flag records WHO set it rather than guessing from the format.
 	bool replOverwriteIsOurs{ false };
 	uint16 replRecheckCount{ 0 }; // [texture replacement] how many times we've re-checked for a replacement
-	// [texture replacement] filter from the pack's textures.ini, set with replStrongHash on each load
-	LatteTextureReplace_Filter replFilter{ LatteTextureReplace_Filter::Game };
 	bool enableReadback{ false }; // if true, texture will be mirrored back to CPU RAM under specific circumstances
 	// invalidation
 	bool forceInvalidate{};

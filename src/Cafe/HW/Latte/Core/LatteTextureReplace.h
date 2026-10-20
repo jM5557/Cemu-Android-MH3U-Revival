@@ -12,14 +12,9 @@
 //   Match by: a full-data content hash of the guest texture (NOT Cemu's sparse
 //             texDataHash2, which samples only ~296 bytes and collides between
 //             different textures -- e.g. monster subspecies sharing a base texture)
-//   Filename: <hash16>_<w>x<h>_fmt<XXXX>_mip<NN>.dds, or any name a pack's textures.ini maps
-//             a hash to (see readPackIni in the .cpp)
+//   Filename: <hash16>_<w>x<h>_fmt<XXXX>_mip<NN>.dds
 // DDS only (BC1/BC2/BC3/BC4/BC5), uploaded compressed with no intermediate decode. A single
 // mip00 file carrying a full internal mip chain serves every mip level.
-
-// Min/mag filter a pack's textures.ini [filtering] section sets for a texture. Game = whatever the
-// game's sampler asks for.
-enum class LatteTextureReplace_Filter : uint8_t { Game = 0, Nearest, Linear };
 
 struct LatteTextureReplace_Entry
 {
@@ -49,15 +44,11 @@ namespace LatteTextureReplace
 	// size/format of the replacement, used to size the host texture (no [TextureRedefine] needed)
 	struct ReplacementInfo { int width=0, height=0; bool hasFormat=false; uint32_t gx2Format=0; };
 	bool GetInfo(uint64_t contentHash, ReplacementInfo& out);
-	// filter forced by an enabled pack's textures.ini, Game when none is
-	LatteTextureReplace_Filter GetFilter(uint64_t contentHash);
 	// full-data hash over the guest mip0 surface; stable and unique per distinct texture
 	uint64_t HashGuest(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt);
 	// Same value as HashGuest, but computed even when no pack is loaded. Texture dumps are named
 	// with it, so a dumped file's name is exactly the name a replacement needs.
-	// filterOut, when given, receives the texture's textures.ini filter, looked up under the same lock
-	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt,
-							 LatteTextureReplace_Filter* filterOut = nullptr);
+	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt);
 
 	// ---- texture dumping ----
 	// Each dump file is written once. Returns false when fileName was already written this session

@@ -683,12 +683,8 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	{
 		// HashGuestAlways rather than HashGuest: dump names must be right even with no pack loaded.
 		// The value is identical, so a replacement lookup is unaffected.
-		// The filter is read with the hash on every load, so a reused texture object never keeps the
-		// previous occupant's filter. The renderers apply it when they build the sampler.
-		tex->replStrongHash = LatteTextureReplace::HashGuestAlways(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format, &tex->replFilter);
+		tex->replStrongHash = LatteTextureReplace::HashGuestAlways(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format);
 	}
-	else if (mipIndex == 0 && sliceIndex == 0)
-		tex->replFilter = LatteTextureReplace_Filter::Game; // not hashed (replacement off, or a render target)
 
 	// Dump slice 0 of each mip of a replaceable surface, once. The name is the one the replacement
 	// loader matches on, so a dumped file can be edited and dropped into a pack as-is (after
@@ -708,8 +704,6 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 		textureLoader.dumpRGBA = (uint8*)malloc(dumpSize);
 		memset(textureLoader.dumpRGBA, 0x00, dumpSize);
 	}
-	else if (mipIndex == 0 && sliceIndex == 0)
-		tex->replFilter = LatteTextureReplace_Filter::Game; // not hashed (replacement off, or a render target)
 
 	// A texture object that already exists is reused when the game puts different data at the same
 	// address (same size and format). Whether it is resized for a replacement was only decided when it
