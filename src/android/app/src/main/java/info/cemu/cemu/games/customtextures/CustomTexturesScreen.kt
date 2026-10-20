@@ -82,6 +82,11 @@ fun CustomTexturesScreen(
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 8.dp),
         )
+        Text(
+            text = tr("Name each .dds file like its dumped texture, or give the pack a textures.ini (PPSSPP style) that maps hashes to files with any name, and can set a texture's filtering to nearest or linear."),
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 8.dp),
+        )
 
         HorizontalDivider()
 

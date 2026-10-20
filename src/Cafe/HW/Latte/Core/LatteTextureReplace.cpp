@@ -387,7 +387,19 @@ namespace LatteTextureReplace
 		return nullptr;
 	}
 
-	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt){
+	// [filtering] for a texture, by its current hash or by the older hash an older pack names it by
+	// (a full dump name as the key). Caller holds s_mutex.
+	static FilterOverride lookupFilter(uint64_t hash){
+		if(s_filters.empty() || hash==0) return FilterOverride::None;
+		if(auto it=s_filters.find(hash); it!=s_filters.end()) return (FilterOverride)it->second;
+		if(auto a=s_legacyAlias.find(hash); a!=s_legacyAlias.end())
+			if(auto it=s_filters.find(a->second); it!=s_filters.end()) return (FilterOverride)it->second;
+		return FilterOverride::None;
+	}
+
+	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt,
+							 FilterOverride* filterOut){
+		if(filterOut) *filterOut=FilterOverride::None;
 		const uint8* p=(const uint8*)memory_getPointerFromPhysicalOffset(physImagePtr);
 		if(!p||!sizeBytes) return 0;
 		const uint64_t raw = HashData(p, sizeBytes);
@@ -399,6 +411,8 @@ namespace LatteTextureReplace
 				auto it=s_index.find(raw);
 				if(it!=s_index.end() && matchesLegacyName(it->second, pixelCount, fmt)) s_legacyAlias[current]=raw;
 			}
+			// Under the lock already held here, instead of a second locked call per texture load
+			if(filterOut && s_enabled) *filterOut=lookupFilter(current);
 		}
 		return current;
 	}
@@ -440,8 +454,7 @@ namespace LatteTextureReplace
 		if(contentHash==0) return FilterOverride::None;
 		std::scoped_lock lock(s_mutex); EnsureInit();
 		if(!s_enabled) return FilterOverride::None;
-		auto it=s_filters.find(contentHash);
-		return it==s_filters.end() ? FilterOverride::None : (FilterOverride)it->second;
+		return lookupFilter(contentHash);
 	}
 
 	const LatteTextureReplace_Entry* GetSlice(uint64_t contentHash, int mipIndex){

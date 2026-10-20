@@ -82,3 +82,15 @@ It covers the textures a pack can replace (BCn-compressed textures, and RGBA8 te
 from its files), not render targets.
 
 If two enabled packs set a filter for the same hash, the first pack alphabetically wins, as with files.
+
+## On Android
+
+Packs and the `textures.ini` format work the same way. The differences are where things are:
+
+- **Pack folder:** `Android/data/info.cemu.cemu/files/load/textures/<title ID>/<pack name>/` on the
+  device's storage. The Custom textures screen shows the exact path for the game. Android limits what
+  file managers can open in `Android/data`; a USB connection to a PC, or `adb push`, always works.
+- **Choosing packs:** long-press the game in the list and choose *Custom textures*. Packs can also be
+  switched on and off in game, from the side menu (*Enable custom textures*).
+- **Dumping:** turn on *Dump textures* on the same Custom textures screen, play, then use
+  *Export dumped textures* to copy the dumps to a folder such as Download.

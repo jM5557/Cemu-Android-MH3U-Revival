@@ -56,7 +56,9 @@ namespace LatteTextureReplace
 	uint64_t HashGuest(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt);
 	// Same value as HashGuest, but computed even when no pack is loaded. Texture dumps are named
 	// with it, so a dumped file's name is exactly the name a replacement needs.
-	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt);
+	// filterOut, when given, receives the texture's [filtering] setting, looked up under the same lock
+	uint64_t HashGuestAlways(uint32_t physImagePtr, uint32_t sizeBytes, uint32_t pixelCount, Latte::E_GX2SURFFMT fmt,
+							 FilterOverride* filterOut = nullptr);
 
 	// ---- texture dumping ----
 	// Each dump file is written once. Returns false when fileName was already written this session

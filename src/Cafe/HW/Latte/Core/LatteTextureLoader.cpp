@@ -683,9 +683,17 @@ void LatteTextureLoader_UpdateTextureSliceData(LatteTexture* tex, uint32 sliceIn
 	{
 		// HashGuestAlways rather than HashGuest: dump names must be right even with no pack loaded.
 		// The value is identical, so a replacement lookup is unaffected.
-		tex->replStrongHash = LatteTextureReplace::HashGuestAlways(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format);
-		// Read on every reload, since a reused texture object can now hold a different texture
-		tex->replFilter = (uint8)LatteTextureReplace::GetFilter(tex->replStrongHash);
+		// The filter is read with the hash on every reload, since a reused texture object can now
+		// hold a different texture
+		LatteTextureReplace::FilterOverride filter;
+		tex->replStrongHash = LatteTextureReplace::HashGuestAlways(physImagePtr, (uint32)textureLoader.maxOffsetOutdated, tex->width * tex->height, format, &filter);
+		tex->replFilter = (uint8)filter;
+	}
+	else if (mipIndex == 0 && sliceIndex == 0)
+	{
+		// Not hashed: packs were switched off (the in-game toggle does that mid-game), or the object
+		// now holds a render target. Either way the previous texture's filter no longer applies.
+		tex->replFilter = 0;
 	}
 
 	// Dump slice 0 of each mip of a replaceable surface, once. The name is the one the replacement
