@@ -49,6 +49,13 @@ namespace CafeSystem
 	void ResumeTitle();
 	bool IsTitlePaused();
 
+	// Held by PauseTitle/ResumeTitle, and by save states for as long as they lift the pause and
+	// hold the world stopped. A pause requested in the meantime (Android pauses whenever the
+	// screen turns off) then waits for the save or load to finish, instead of rewriting thread
+	// suspend counts in the middle of a capture or a restore. Recursive, because a save state
+	// lifts and restores the pause itself while holding it.
+	std::recursive_mutex& GetPauseMutex();
+
 	// The game has a network socket open. A paused game stops answering, and a save state can
 	// neither hold a connection nor bring one back, so either would drop it from an online
 	// session (a multiplayer room drops the player). Pause and save states are refused while

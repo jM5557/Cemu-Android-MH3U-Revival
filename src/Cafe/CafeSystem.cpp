@@ -473,6 +473,7 @@ namespace CafeSystem
 	TitleId sForegroundTitleId = 0;
 
 	std::atomic_bool sTitlePaused = false; // read by the CPU idle loop and the GPU thread
+	std::recursive_mutex sPauseMutex; // see GetPauseMutex()
 
 	GameInfo2 sGameInfo_ForegroundTitle;
 
@@ -919,8 +920,14 @@ namespace CafeSystem
 		return sSystemRunning;
 	}
 
+	std::recursive_mutex& GetPauseMutex()
+	{
+		return sPauseMutex;
+	}
+
 	void PauseTitle()
 	{
+		std::lock_guard pauseLock(sPauseMutex);
 		if (!sSystemRunning || sTitlePaused)
 		{
 			return;
@@ -941,6 +948,7 @@ namespace CafeSystem
 
 	void ResumeTitle()
 	{
+		std::lock_guard pauseLock(sPauseMutex);
 		if (!sSystemRunning || !sTitlePaused)
 		{
 			return;
