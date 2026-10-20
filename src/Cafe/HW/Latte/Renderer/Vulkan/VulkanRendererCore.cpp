@@ -527,6 +527,9 @@ uint64 VulkanRenderer::GetDescriptorSetStateHash(LatteDecompilerShader* shader)
 		hash += (uint64)texture->GetUniqueId();
 		hash = std::rotr<uint64>(hash, 21);
 		hash += (uint64)(word4 & 0x0FFF0000);
+		// a textures.ini filter changes the sampler without touching the registers above, and a
+		// reused texture can gain or lose one
+		hash += (uint64)texture->baseTexture->replFilter << 32;
 	}
 
 	return hash;
@@ -766,6 +769,20 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 
 			if (baseTexture->overwriteInfo.anisotropicLevel >= 0)
 				maxAniso = baseTexture->overwriteInfo.anisotropicLevel;
+
+			// [texture replacement] filter set by the pack's textures.ini. Anisotropic sampling would
+			// blend texels again, so nearest turns it off.
+			if (baseTexture->replFilter == LatteTextureReplace_Filter::Nearest)
+			{
+				samplerInfo.minFilter = VK_FILTER_NEAREST;
+				samplerInfo.magFilter = VK_FILTER_NEAREST;
+				maxAniso = 0;
+			}
+			else if (baseTexture->replFilter == LatteTextureReplace_Filter::Linear)
+			{
+				samplerInfo.minFilter = VK_FILTER_LINEAR;
+				samplerInfo.magFilter = VK_FILTER_LINEAR;
+			}
 
 			if (maxAniso > 0)
 			{

@@ -1424,6 +1424,12 @@ void OpenGLRenderer::renderstate_updateTextureSettingsGL(LatteDecompilerShader* 
 		//auto filterZ = samplerWords->WORD0.get_Z_FILTER();
 		auto filterMip = samplerWords->WORD0.get_MIP_FILTER();
 
+		// [texture replacement] filter set by the pack's textures.ini (the mip filter stays the game's)
+		if (baseTexture->replFilter == LatteTextureReplace_Filter::Nearest)
+			filterMin = filterMag = Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT;
+		else if (baseTexture->replFilter == LatteTextureReplace_Filter::Linear)
+			filterMin = filterMag = Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::BILINEAR;
+
 		// get OpenGL constant for min filter
 		uint32 filterMinGL = _getGLMinFilter(filterMin, filterMip);
 		uint32 filterMagGL = (filterMag == Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT || filterMag == Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::ANISO_POINT) ? GL_NEAREST : GL_LINEAR;
@@ -1461,6 +1467,9 @@ void OpenGLRenderer::renderstate_updateTextureSettingsGL(LatteDecompilerShader* 
 
 		if (baseTexture->overwriteInfo.anisotropicLevel >= 0)
 			maxAniso = baseTexture->overwriteInfo.anisotropicLevel;
+		// anisotropic sampling would blend texels again
+		if (baseTexture->replFilter == LatteTextureReplace_Filter::Nearest)
+			maxAniso = 0;
 
 		if (samplerState->maxAniso != maxAniso)
 		{

@@ -2060,7 +2060,10 @@ void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandE
 		if (stageSamplerIndex != LATTE_DECOMPILER_SAMPLER_NONE)
 		{
 		    uint32 samplerIndex = stageSamplerIndex + LatteDecompiler_getTextureSamplerBaseIndex(shader->shaderType);
-			_LatteRegisterSetSampler* samplerWords = LatteGPUState.contextNew.SQ_TEX_SAMPLER + samplerIndex;
+			// A copy: the overrides below belong to this texture, and written into the register state
+			// they would stay on the sampler for the next texture drawn with it
+			_LatteRegisterSetSampler samplerWordsCopy = LatteGPUState.contextNew.SQ_TEX_SAMPLER[samplerIndex];
+			_LatteRegisterSetSampler* samplerWords = &samplerWordsCopy;
 
 			// Overwriting
 
@@ -2073,6 +2076,20 @@ void MetalRenderer::BindStageResources(MTL::RenderCommandEncoder* renderCommandE
             // Max anisotropy
             if (baseTexture->overwriteInfo.anisotropicLevel >= 0)
                 samplerWords->WORD0.set_MAX_ANISO_RATIO(baseTexture->overwriteInfo.anisotropicLevel);
+
+            // [texture replacement] filter set by the pack's textures.ini. Anisotropic sampling would
+            // blend texels again, so nearest turns it off.
+            if (baseTexture->replFilter == LatteTextureReplace_Filter::Nearest)
+            {
+                samplerWords->WORD0.set_XY_MIN_FILTER(Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT);
+                samplerWords->WORD0.set_XY_MAG_FILTER(Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::POINT);
+                samplerWords->WORD0.set_MAX_ANISO_RATIO(0);
+            }
+            else if (baseTexture->replFilter == LatteTextureReplace_Filter::Linear)
+            {
+                samplerWords->WORD0.set_XY_MIN_FILTER(Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::BILINEAR);
+                samplerWords->WORD0.set_XY_MAG_FILTER(Latte::LATTE_SQ_TEX_SAMPLER_WORD0_0::E_XY_FILTER::BILINEAR);
+            }
 
     		sampler = m_samplerCache->GetSamplerState(LatteGPUState.contextNew, shader->shaderType, stageSamplerIndex, samplerWords);
 		}
