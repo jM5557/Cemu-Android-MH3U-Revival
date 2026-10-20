@@ -22,7 +22,15 @@ HLECALL s_ppcHleTable[HLE_TABLE_CAPACITY]{};
 // The name was previously accepted and discarded. Keeping it lets anything that finds an
 // HLE opcode -- a save state restoring blocked threads, a crash dump, the debugger -- say
 // which call it is looking at instead of reporting a bare table index.
-std::string s_ppcHleNames[HLE_TABLE_CAPACITY];
+// Built on first use, not as a global std::string array: osLib_addFunction registers HLE
+// calls from other files' static initializers, which can run before this file's globals
+// are constructed (the order is up to the linker). Writing into an unconstructed
+// std::string then crashes at startup. Never freed, so lookups during shutdown stay valid.
+static std::string* PPCInterpreter_hleNames()
+{
+	static std::string* s_names = new std::string[HLE_TABLE_CAPACITY];
+	return s_names;
+}
 sint32 s_ppcHleTableWriteIndex = 0;
 std::mutex s_ppcHleTableMutex;
 
@@ -43,7 +51,7 @@ HLEIDX PPCInterpreter_registerHLECall(HLECALL hleCall, std::string hleName)
 	}
 	cemu_assert(s_ppcHleTableWriteIndex < HLE_TABLE_CAPACITY);
 	s_ppcHleTable[s_ppcHleTableWriteIndex] = hleCall;
-	s_ppcHleNames[s_ppcHleTableWriteIndex] = std::move(hleName);
+	PPCInterpreter_hleNames()[s_ppcHleTableWriteIndex] = std::move(hleName);
 	HLEIDX funcIndex = s_ppcHleTableWriteIndex;
 	s_ppcHleTableWriteIndex++;
 	return funcIndex;
@@ -60,9 +68,10 @@ const char* PPCInterpreter_getHLEName(HLEIDX funcIndex)
 {
 	if (funcIndex < 0 || funcIndex >= HLE_TABLE_CAPACITY)
 		return "<out of range>";
-	if (s_ppcHleNames[funcIndex].empty())
+	const std::string& name = PPCInterpreter_hleNames()[funcIndex];
+	if (name.empty())
 		return "<unnamed>";
-	return s_ppcHleNames[funcIndex].c_str();
+	return name.c_str();
 }
 
 std::mutex s_hleLogMutex;
