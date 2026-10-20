@@ -107,6 +107,7 @@ fun EmulationScreen(
     var showEmulatedUSBDevices by remember { mutableStateOf(false) }
     var cheatsTitleId by remember { mutableStateOf<Long?>(null) }
     var showScreenLayoutDialog by remember { mutableStateOf(false) }
+    var showSaveStatesDialog by remember { mutableStateOf(false) }
     // 0 until the game is up
     var runningTitleId by remember { mutableLongStateOf(0L) }
 
@@ -126,6 +127,13 @@ fun EmulationScreen(
     val gamePadPosition by viewModel.gamePadPosition.collectAsState()
     val isInputOverlayVisible by viewModel.isInputOverlayVisible.collectAsState()
     val inputOverlaySettings by viewModel.inputOverlaySettings.collectAsState()
+    val saveStateBusy by viewModel.saveStateBusy.collectAsState()
+
+    LaunchedEffect(Unit) {
+        viewModel.saveStateEvents.collect { event ->
+            snackbarHostState.showMessage(scope, saveStateEventMessage(event))
+        }
+    }
 
 
     fun closeDrawer() {
@@ -177,6 +185,9 @@ fun EmulationScreen(
                 HotkeyAction.QUIT -> showQuitConfirmationDialog = true
                 HotkeyAction.TOGGLE_MENU -> toggleMenu()
                 HotkeyAction.SHOW_EMULATED_USB_DEVICES_DIALOG -> showEmulatedUSBDevices = true
+                // quick slot; ignored until the game is up
+                HotkeyAction.QUICK_SAVE_STATE -> if (runningTitleId != 0L) viewModel.saveState(0)
+                HotkeyAction.QUICK_LOAD_STATE -> if (runningTitleId != 0L) viewModel.loadState(0)
             }
         }
     }
@@ -229,6 +240,19 @@ fun EmulationScreen(
                             cheatsTitleId = NativeCheats.getRunningTitleId().takeIf { it != 0L }
                             closeDrawer()
                         },
+                        canUseSaveStates = runningTitleId != 0L && saveStateBusy == null,
+                        onShowSaveStates = {
+                            showSaveStatesDialog = runningTitleId != 0L
+                            closeDrawer()
+                        },
+                        onQuickSave = {
+                            viewModel.saveState(0)
+                            closeDrawer()
+                        },
+                        onQuickLoad = {
+                            viewModel.loadState(0)
+                            closeDrawer()
+                        },
                     )
                 }
             }
@@ -256,6 +280,8 @@ fun EmulationScreen(
                 onResume = { viewModel.updateSideMenuState(sideMenuState.copy(isEmulationPaused = false)) },
             )
         }
+
+        saveStateBusy?.let { SaveStateBusyOverlay(it) }
 
         if (inputOverlayInputMode != DEFAULT) {
             EditInputsLayout(
@@ -319,6 +345,13 @@ fun EmulationScreen(
                 showScreenLayoutDialog = false
             },
             onDismiss = { showScreenLayoutDialog = false },
+        )
+    }
+
+    if (showSaveStatesDialog) {
+        SaveStatesDialog(
+            viewModel = viewModel,
+            onDismiss = { showSaveStatesDialog = false },
         )
     }
 
@@ -403,6 +436,10 @@ private fun EmulationSideMenuContent(
     onShowEmulatedUSBDevices: () -> Unit,
     onShowScreenLayout: () -> Unit,
     onShowCheats: () -> Unit,
+    canUseSaveStates: Boolean,
+    onShowSaveStates: () -> Unit,
+    onQuickSave: () -> Unit,
+    onQuickLoad: () -> Unit,
     onEditInputOverlay: () -> Unit,
     onResetInputOverlay: () -> Unit,
     onQuit: () -> Unit,
@@ -420,6 +457,24 @@ private fun EmulationSideMenuContent(
         label = tr("Pause on focus loss / standby"),
         checked = pauseOnFocusLoss,
         onCheckedChange = onPauseOnFocusLossChange,
+    )
+
+    TextButtonItem(
+        label = tr("Save states"),
+        enabled = canUseSaveStates,
+        onClick = onShowSaveStates,
+    )
+
+    TextButtonItem(
+        label = tr("Quick save state (slot 0)"),
+        enabled = canUseSaveStates,
+        onClick = onQuickSave,
+    )
+
+    TextButtonItem(
+        label = tr("Quick load state (slot 0)"),
+        enabled = canUseSaveStates,
+        onClick = onQuickLoad,
     )
 
     CheckboxItem(

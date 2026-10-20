@@ -23,16 +23,21 @@ import info.cemu.cemu.nativeinterface.NativeCheats
 import info.cemu.cemu.nativeinterface.NativeEmulation
 import info.cemu.cemu.nativeinterface.NativeEmulation.PrepareTitleResult
 import info.cemu.cemu.nativeinterface.NativeException
+import info.cemu.cemu.nativeinterface.NativeSaveStates
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class SideMenuState(
     val isMotionEnabled: Boolean = false,
@@ -40,6 +45,26 @@ data class SideMenuState(
     val isPadVisible: Boolean = false,
     val isInputOverlayVisible: Boolean = false,
     val isEmulationPaused: Boolean = false,
+)
+
+enum class SaveStateAction { SAVE, LOAD, UNDO }
+
+/** What is running: slot is null for an undo. */
+data class SaveStateBusy(val action: SaveStateAction, val slot: Int?)
+
+sealed interface SaveStateEvent {
+    val operation: SaveStateBusy
+
+    data class Succeeded(override val operation: SaveStateBusy) : SaveStateEvent
+    data class Failed(override val operation: SaveStateBusy, val message: String) : SaveStateEvent
+}
+
+data class SaveStateSlot(
+    val slot: Int,
+    val exists: Boolean,
+    val savedAtSeconds: Long,
+    /** Why the state cannot be loaded into the running game; empty when it can. */
+    val incompatibility: String,
 )
 
 class ConditionFlags(
@@ -164,6 +189,79 @@ class EmulationViewModel(
         } else if (!destroyedSurfaces.get(isMain = true)) {
             // with the screen off, it resumes once the surface is back (surfaceChanged)
             NativeEmulation.resumeTitle()
+        }
+    }
+
+    private val _saveStateBusy = MutableStateFlow<SaveStateBusy?>(null)
+
+    /** Set while a save, load or undo runs; the game is stopped for part of that time. */
+    val saveStateBusy = _saveStateBusy.asStateFlow()
+
+    private val _saveStateEvents = MutableSharedFlow<SaveStateEvent>(extraBufferCapacity = 4)
+    val saveStateEvents = _saveStateEvents.asSharedFlow()
+
+    private val _saveStateRevision = MutableStateFlow(0)
+
+    /** Changes whenever the slots may have changed, so a slot list can read them again. */
+    val saveStateRevision = _saveStateRevision.asStateFlow()
+
+    fun saveState(slot: Int) =
+        runSaveStateOperation(SaveStateBusy(SaveStateAction.SAVE, slot)) { NativeSaveStates.saveToSlot(slot) }
+
+    fun loadState(slot: Int) =
+        runSaveStateOperation(SaveStateBusy(SaveStateAction.LOAD, slot)) { NativeSaveStates.loadFromSlot(slot) }
+
+    fun undoLoadState() =
+        runSaveStateOperation(SaveStateBusy(SaveStateAction.UNDO, null)) { NativeSaveStates.undoLoadState() }
+
+    fun deleteSaveState(slot: Int) {
+        if (_saveStateBusy.value != null) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { NativeSaveStates.deleteSlot(slot) }
+            _saveStateRevision.update { it + 1 }
+        }
+    }
+
+    suspend fun querySaveStateSlots(): List<SaveStateSlot> = withContext(Dispatchers.IO) {
+        (0 until NativeSaveStates.getSlotCount()).map { slot ->
+            val fields = NativeSaveStates.querySlot(slot)
+            SaveStateSlot(
+                slot = slot,
+                exists = fields?.getOrNull(0) == "1",
+                savedAtSeconds = fields?.getOrNull(1)?.toLongOrNull() ?: 0L,
+                incompatibility = fields?.getOrNull(2).orEmpty(),
+            )
+        }
+    }
+
+    suspend fun hasUndoState(): Boolean = withContext(Dispatchers.IO) { NativeSaveStates.hasUndoState() }
+
+    /**
+     * One operation at a time; a second request while one runs is ignored, the same as a second
+     * tap on a button that is already working.
+     */
+    private fun runSaveStateOperation(busy: SaveStateBusy, operation: () -> String?) {
+        if (_saveStateBusy.value != null) return
+        _saveStateBusy.value = busy
+        viewModelScope.launch {
+            val error = try {
+                withContext(Dispatchers.IO) { operation() }
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                exception.message ?: exception.toString()
+            }
+            _saveStateBusy.value = null
+            _saveStateRevision.update { it + 1 }
+            if (error == null && busy.action != SaveStateAction.SAVE && _sideMenuState.value.isEmulationPaused) {
+                // A load always leaves the game running (while paused the screen would stay black,
+                // since the load drops the GPU caches that held the last frame). Native code has
+                // already resumed it, so only the menu's checkbox needs to follow.
+                _sideMenuState.update { it.copy(isEmulationPaused = false) }
+            }
+            _saveStateEvents.emit(
+                if (error == null) SaveStateEvent.Succeeded(busy) else SaveStateEvent.Failed(busy, error)
+            )
         }
     }
 

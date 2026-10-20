@@ -19,6 +19,7 @@ add_library(CemuAndroid SHARED
         NativeLogging.cpp
         NativeMH3U.cpp
         NativeOnlineFiles.cpp
+        NativeSaveStates.cpp
         NativeSettings.cpp
         NativeSwkbd.cpp
         WuaConverter.cpp

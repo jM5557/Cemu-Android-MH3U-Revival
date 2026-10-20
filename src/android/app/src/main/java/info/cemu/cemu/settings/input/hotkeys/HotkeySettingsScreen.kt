@@ -211,6 +211,8 @@ private fun hotkeyActionToString(hotkeyAction: HotkeyAction) = when (hotkeyActio
     HotkeyAction.QUIT -> tr("Quit")
     HotkeyAction.TOGGLE_MENU -> tr("Toggle menu")
     HotkeyAction.SHOW_EMULATED_USB_DEVICES_DIALOG -> tr("Show Emulated USB Devices dialog")
+    HotkeyAction.QUICK_SAVE_STATE -> tr("Quick save state (slot 0)")
+    HotkeyAction.QUICK_LOAD_STATE -> tr("Quick load state (slot 0)")
 }
 
 @Composable
