@@ -56,7 +56,10 @@ b000e9658445a9ae = linear
 - **Keys** are the 16-character hash from the dump filename. A plain hash means mip level 0; a single
   DDS with a full mip chain covers every level. To give a separate file for another mip level, use the
   whole dump name as the key, e.g. `22fb5c1e481b3338_1280x720_fmt0031_mip01 = menu/background1_mip1.dds`.
-- **Paths** are relative to the pack folder. `/` and `\` both work.
+  A pack made before the hash change (its files named with the older hashes) also needs the whole dump
+  name, because an older hash is only accepted for a texture of the size and format in that name.
+- **Paths** are relative to the pack folder, and must stay inside it (no `..` or drive letters). `/` and
+  `\` both work.
 - **Comments** start with `#`, on their own line or after an entry. (So a file name cannot contain `#`.)
 - A `textures.ini` entry beats a hash-named file in the same pack. Hash-named files keep working alongside
   it, so you can move an existing pack over a bit at a time.

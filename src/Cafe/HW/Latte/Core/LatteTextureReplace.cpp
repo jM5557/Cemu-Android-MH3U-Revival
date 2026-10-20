@@ -188,8 +188,10 @@ namespace LatteTextureReplace
 		if(!f) return;
 		const std::string where=_pathToUtf8(iniPath);
 		uint32_t warnings=0;
+		// Only the index build (the one call that collects filters) logs. The conflict check reads the
+		// same file again every time the Custom textures window refreshes, and would repeat each warning.
 		auto warn=[&](int lineNo,const std::string& what){
-			if(++warnings<=16) cemuLog_log(LogType::Force,"[TextureReplace] {} line {}: {}",where,lineNo,what);
+			if(filters && ++warnings<=16) cemuLog_log(LogType::Force,"[TextureReplace] {} line {}: {}",where,lineNo,what);
 		};
 		std::string line, section;
 		int lineNo=0;
@@ -217,7 +219,13 @@ namespace LatteTextureReplace
 			if(section=="hashes"){
 				if(value.empty()) continue; // listed but not replaced
 				std::replace(value.begin(),value.end(),'\\','/');
-				const fs::path p=dir/_utf8ToPath(value);
+				// The file has to be inside the folder: a path with a drive letter or through ".." works
+				// on the author's PC and nowhere else
+				const fs::path rel=_utf8ToPath(value);
+				bool inside=!rel.is_absolute() && !rel.has_root_name() && !rel.has_root_directory();
+				for(const auto& part: rel) if(part==fs::path("..")) inside=false;
+				if(!inside){ warn(lineNo,"'"+value+"' is not inside the pack folder"); continue; }
+				const fs::path p=dir/rel;
 				if(!isDDSFile(p)){ warn(lineNo,"'"+value+"' is not a .dds file"); continue; }
 				if(!fs::is_regular_file(p,ec)){ warn(lineNo,"'"+value+"' does not exist"); continue; }
 				if(!listed.emplace(hash,mip).second){ warn(lineNo,"'"+key+"' is listed more than once, keeping the first"); continue; }
