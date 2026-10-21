@@ -1,12 +1,11 @@
 package info.cemu.cemu.common
 
-/** Features that are built in but switched off in this build. */
+/** Switches for features that can be turned off in a build without removing their code. */
 object FeatureFlags {
     /**
-     * Save states (side menu, quick save/load hotkeys). Off until loading a state stops crashing on
-     * Android: a load restores guest memory and the files but the app dies right after, and the
-     * crash itself needs a logcat backtrace to find. The core and the UI are kept, so turning this
-     * back on is all that re-enabling them takes.
+     * Save states (side menu, quick save/load hotkeys). Set to false to hide them again without
+     * touching anything else: the side menu entries and the two hotkeys disappear, a hotkey already
+     * bound is ignored, and the save state core stays in place.
      */
-    const val SAVE_STATES = false
+    const val SAVE_STATES = true
 }
