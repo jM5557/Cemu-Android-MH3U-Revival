@@ -620,8 +620,26 @@ void PPCRecompiler_invalidateRange(uint32 startAddr, uint32 endAddr)
 	PPCRecFunction_t* rFunc;
 
 	// mark range as unvisited
-	for (uint64 currentAddr = (uint64)startAddr&~3; currentAddr < (uint64)(endAddr&~3); currentAddr += 4)
-		ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[currentAddr / 4] = PPCRecompiler_leaveRecompilerCode_unvisited;
+	//
+	// The jump table only exists for the code area, and within it only for the 4 MB blocks
+	// PPCRecompiler_reserveLookupTableBlock() has allocated; the rest is reserved address space
+	// that faults when written. So the range is clamped to the code area and unallocated blocks
+	// are skipped -- nothing was ever translated there, so there is nothing to invalidate. Without
+	// this, a whole-space invalidation (a save state load passes 0..0xFFFFFFFF, written against
+	// upstream's newer invalidateRange, which deletes the functions in the range and never walks
+	// the table) wrote far past the allocated table and crashed.
+	const uint64 tableEnd = std::min<uint64>((uint64)(endAddr & ~3u), (uint64)PPC_REC_CODE_AREA_END);
+	for (uint64 currentAddr = (uint64)startAddr & ~3ull; currentAddr < tableEnd; )
+	{
+		const uint64 blockIndex = currentAddr / PPC_REC_ALLOC_BLOCK_SIZE;
+		const uint64 blockEnd = std::min<uint64>((blockIndex + 1) * PPC_REC_ALLOC_BLOCK_SIZE, tableEnd);
+		if (blockIndex < ppcRecompiler_reservedBlockMask.size() && ppcRecompiler_reservedBlockMask[blockIndex])
+		{
+			for (; currentAddr < blockEnd; currentAddr += 4)
+				ppcRecompilerInstanceData->ppcRecompilerDirectJumpTable[currentAddr / 4] = PPCRecompiler_leaveRecompilerCode_unvisited;
+		}
+		currentAddr = blockEnd;
+	}
 
 	// add entry to invalidation queue
 	PPCRecompilerState.invalidationRanges.emplace_back(startAddr, endAddr-startAddr);
