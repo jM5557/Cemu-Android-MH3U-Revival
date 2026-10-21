@@ -57,6 +57,13 @@ namespace SaveStates
 		return fp;
 	}
 
+	static bool IsZeroBlock(const uint8* block, uint32 size)
+	{
+		// memcmp against a zero buffer is vectorised; a byte-at-a-time scan of a gigabyte is not
+		static const std::vector<uint8> s_zeros(kMemoryBlockSize, 0);
+		return std::memcmp(block, s_zeros.data(), size) == 0;
+	}
+
 	// MEMR: every mapped guest memory range.
 	//
 	// No pointer relocation is ever needed here. Guest memory is a flat, fixed-layout
@@ -113,27 +120,28 @@ namespace SaveStates
 				{
 					const uint32 offset = i * kMemoryBlockSize;
 					const uint32 blockSize = std::min(kMemoryBlockSize, size - offset);
-					const uint8* block = data + offset;
-					const bool isNonZero = std::find_if(block, block + blockSize, [](uint8 v) { return v != 0; }) != block + blockSize;
-					blockPresent[i] = isNonZero ? 1 : 0;
+					blockPresent[i] = IsZeroBlock(data + offset, blockSize) ? 0 : 1;
 				}
 			}
 			s.DoBytes(blockPresent.data(), blockCount);
 			if (s.HasError())
 				return;
 
-			if (s.IsReading())
-			{
-				// Elided blocks were all-zero at capture time, so zero the range first
-				// and then fill in only the blocks that were stored.
-				std::memset(data, 0, size);
-			}
 			for (uint32 i = 0; i < blockCount; i++)
 			{
-				if (!blockPresent[i])
-					continue;
 				const uint32 offset = i * kMemoryBlockSize;
 				const uint32 blockSize = std::min(kMemoryBlockSize, size - offset);
+				if (!blockPresent[i])
+				{
+					// Elided blocks were all-zero at capture time. Zero only the ones that are not
+					// zero now. Guest memory is private anonymous memory, so a page the game never
+					// touched takes no RAM, and reading it costs none either, but writing it does:
+					// zeroing every range outright made a load back all ~1.45 GB of guest address
+					// space with real memory at once, and Android's low-memory killer ended the app.
+					if (s.IsReading() && !IsZeroBlock(data + offset, blockSize))
+						std::memset(data + offset, 0, blockSize);
+					continue;
+				}
 				s.DoBytes(data + offset, blockSize);
 				if (s.HasError())
 					return;
