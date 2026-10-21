@@ -59,7 +59,7 @@ fun HotkeySettingsScreen(
         appBarText = tr("Hotkey settings"),
         navigateBack = navigateBack,
     ) {
-        HotkeyAction.entries.forEach { action ->
+        HotkeyAction.entries.filter { it.isAvailable }.forEach { action ->
             val combo = hotkeys[action]
 
             Row(

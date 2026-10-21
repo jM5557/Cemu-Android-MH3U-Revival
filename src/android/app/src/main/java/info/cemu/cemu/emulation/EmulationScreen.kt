@@ -63,6 +63,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.viewmodel.MutableCreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
 import info.cemu.cemu.R
+import info.cemu.cemu.common.FeatureFlags
 import info.cemu.cemu.common.settings.GamePadPosition
 import info.cemu.cemu.common.cheats.CheatsDialog
 import info.cemu.cemu.common.settings.HotkeyAction
@@ -186,8 +187,8 @@ fun EmulationScreen(
                 HotkeyAction.TOGGLE_MENU -> toggleMenu()
                 HotkeyAction.SHOW_EMULATED_USB_DEVICES_DIALOG -> showEmulatedUSBDevices = true
                 // quick slot; ignored until the game is up
-                HotkeyAction.QUICK_SAVE_STATE -> if (runningTitleId != 0L) viewModel.saveState(0)
-                HotkeyAction.QUICK_LOAD_STATE -> if (runningTitleId != 0L) viewModel.loadState(0)
+                HotkeyAction.QUICK_SAVE_STATE -> if (FeatureFlags.SAVE_STATES && runningTitleId != 0L) viewModel.saveState(0)
+                HotkeyAction.QUICK_LOAD_STATE -> if (FeatureFlags.SAVE_STATES && runningTitleId != 0L) viewModel.loadState(0)
             }
         }
     }
@@ -348,7 +349,7 @@ fun EmulationScreen(
         )
     }
 
-    if (showSaveStatesDialog) {
+    if (FeatureFlags.SAVE_STATES && showSaveStatesDialog) {
         SaveStatesDialog(
             viewModel = viewModel,
             onDismiss = { showSaveStatesDialog = false },
@@ -459,23 +460,25 @@ private fun EmulationSideMenuContent(
         onCheckedChange = onPauseOnFocusLossChange,
     )
 
-    TextButtonItem(
-        label = tr("Save states"),
-        enabled = canUseSaveStates,
-        onClick = onShowSaveStates,
-    )
+    if (FeatureFlags.SAVE_STATES) {
+        TextButtonItem(
+            label = tr("Save states"),
+            enabled = canUseSaveStates,
+            onClick = onShowSaveStates,
+        )
 
-    TextButtonItem(
-        label = tr("Quick save state (slot 0)"),
-        enabled = canUseSaveStates,
-        onClick = onQuickSave,
-    )
+        TextButtonItem(
+            label = tr("Quick save state (slot 0)"),
+            enabled = canUseSaveStates,
+            onClick = onQuickSave,
+        )
 
-    TextButtonItem(
-        label = tr("Quick load state (slot 0)"),
-        enabled = canUseSaveStates,
-        onClick = onQuickLoad,
-    )
+        TextButtonItem(
+            label = tr("Quick load state (slot 0)"),
+            enabled = canUseSaveStates,
+            onClick = onQuickLoad,
+        )
+    }
 
     CheckboxItem(
         label = tr("Enable motion"),
